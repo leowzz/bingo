@@ -9,31 +9,34 @@ import (
 func TestMatcher_Match(t *testing.T) {
 	rules := []Rule{
 		{
-			ID:     "rule1",
-			Name:   "用户表规则",
-			Table:  "users",
-			Events: []string{"INSERT", "UPDATE"},
-			Filter: "true",
+			ID:       "rule1",
+			Name:     "用户表规则",
+			Database: "test",
+			Table:    "users",
+			Events:   []string{"INSERT", "UPDATE"},
+			Filter:   "true",
 			Actions: []Action{
 				{Type: "log", Message: "User event"},
 			},
 		},
 		{
-			ID:     "rule2",
-			Name:   "订单表规则",
-			Table:  "orders",
-			Events: []string{"UPDATE"},
-			Filter: "true",
+			ID:       "rule2",
+			Name:     "订单表规则",
+			Database: "test",
+			Table:    "orders",
+			Events:   []string{"UPDATE"},
+			Filter:   "true",
 			Actions: []Action{
 				{Type: "log", Message: "Order event"},
 			},
 		},
 		{
-			ID:     "rule3",
-			Name:   "用户删除规则",
-			Table:  "users",
-			Events: []string{"DELETE"},
-			Filter: "true",
+			ID:       "rule3",
+			Name:     "用户删除规则",
+			Database: "test",
+			Table:    "users",
+			Events:   []string{"DELETE"},
+			Filter:   "true",
 			Actions: []Action{
 				{Type: "log", Message: "User deleted"},
 			},
@@ -118,40 +121,45 @@ func TestMatcher_matchTable(t *testing.T) {
 	matcher := NewMatcher([]Rule{})
 
 	tests := []struct {
-		name       string
-		ruleTable  string
-		eventTable string
-		expected   bool
+		name         string
+		ruleDatabase string
+		ruleTable    string
+		eventTable   string
+		expected     bool
 	}{
 		{
-			name:       "精确匹配",
-			ruleTable:  "test.users",
-			eventTable: "test.users",
-			expected:   true,
+			name:         "精确匹配",
+			ruleDatabase: "test",
+			ruleTable:    "users",
+			eventTable:   "test.users",
+			expected:     true,
 		},
 		{
-			name:       "表名匹配（不带数据库）",
-			ruleTable:  "users",
-			eventTable: "test.users",
-			expected:   true,
+			name:         "数据库名不匹配",
+			ruleDatabase: "prod",
+			ruleTable:    "users",
+			eventTable:   "test.users",
+			expected:     false,
 		},
 		{
-			name:       "不匹配",
-			ruleTable:  "users",
-			eventTable: "test.orders",
-			expected:   false,
+			name:         "表名不匹配",
+			ruleDatabase: "test",
+			ruleTable:    "users",
+			eventTable:   "test.orders",
+			expected:     false,
 		},
 		{
-			name:       "数据库名不匹配",
-			ruleTable:  "prod.users",
-			eventTable: "test.users",
-			expected:   false,
+			name:         "完全不匹配",
+			ruleDatabase: "prod",
+			ruleTable:    "orders",
+			eventTable:   "test.users",
+			expected:     false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := matcher.matchTable(tt.ruleTable, tt.eventTable)
+			result := matcher.matchTable(tt.ruleDatabase, tt.ruleTable, tt.eventTable)
 			if result != tt.expected {
 				t.Errorf("matchTable() = %v, want %v", result, tt.expected)
 			}
@@ -206,8 +214,8 @@ func TestMatcher_matchEvent(t *testing.T) {
 
 func TestMatcher_GetRuleByID(t *testing.T) {
 	rules := []Rule{
-		{ID: "rule1", Name: "Rule 1"},
-		{ID: "rule2", Name: "Rule 2"},
+		{ID: "rule1", Name: "Rule 1", Database: "test", Table: "test_table", Events: []string{"INSERT"}, Actions: []Action{{Type: "log"}}},
+		{ID: "rule2", Name: "Rule 2", Database: "test", Table: "test_table", Events: []string{"INSERT"}, Actions: []Action{{Type: "log"}}},
 	}
 
 	matcher := NewMatcher(rules)
