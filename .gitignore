@@ -1,0 +1,42 @@
+# Binaries
+bin/
+bingo
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Output of the go coverage tool
+*.coverprofile
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# IDE and editor folders/files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Config example files (keep the template, ignore actual config)
+config.yaml
+rules.yaml
+
+# Node and front-end
+node_modules/
+

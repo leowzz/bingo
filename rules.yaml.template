@@ -1,0 +1,49 @@
+rules:
+  # 示例 1: 用户缓存失效
+  - id: "user_cache_invalidate"
+    name: "用户缓存失效"
+    table: "users"
+    events: ["UPDATE", "DELETE"]
+    filter: "true"
+    actions:
+      - type: "redis"
+        cmd: "DEL"
+        key: "cache:user:{{ .ID }}"
+      - type: "log"
+        level: "info"
+        message: "用户缓存已失效: user_id={{ .ID }}"
+
+  # 示例 2: 订单状态变更通知
+  - id: "order_status_notify"
+    name: "订单状态变更通知"
+    table: "orders"
+    events: ["UPDATE"]
+    filter: "true"
+    actions:
+      - type: "webhook"
+        url: "https://api.example.com/order/completed"
+        method: "POST"
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {
+            "order_id": "{{ .ID }}",
+            "status": "{{ .Status }}"
+          }
+        timeout: 5
+        retry: 3
+      - type: "log"
+        level: "info"
+        message: "订单状态变更: order_id={{ .ID }}, status={{ .Status }}"
+
+  # 示例 3: 用户注册事件
+  - id: "user_registered"
+    name: "用户注册事件"
+    table: "users"
+    events: ["INSERT"]
+    filter: "true"
+    actions:
+      - type: "log"
+        level: "info"
+        message: "新用户注册: user_id={{ .ID }}, email={{ .Email }}"
+

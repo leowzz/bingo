@@ -1,0 +1,45 @@
+# MySQL 连接配置
+mysql:
+  host: "127.0.0.1"
+  port: 3306
+  user: "root"
+  password: "root"
+  database: "test_db"
+
+# Redis 配置
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+# Binlog 位置（可选，用于断点续传）
+binlog:
+  file: ""  # 留空则从当前位置开始
+  position: 0
+
+# 规则文件路径
+rules_file: "rules.yaml"
+
+# 性能配置
+performance:
+  # 防抖窗口（毫秒）
+  debounce_window: 100
+  # 批量处理大小
+  batch_size: 100
+  # 并发处理数
+  concurrency: 10
+  # 事件队列大小
+  queue_size: 10000
+  # 工作池大小
+  worker_pool_size: 50
+
+# 日志配置
+logging:
+  level: "info"  # debug, info, warn, error
+  format: "text" # json, text
+  output: "stdout" # stdout, file
+  file: "/var/log/bingo/bingo.log"
+  max_size: 100  # MB
+  max_backups: 10
+  max_age: 30    # days
+
