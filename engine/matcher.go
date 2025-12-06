@@ -2,7 +2,6 @@ package engine
 
 import (
 	"fmt"
-	"strings"
 
 	"bingo/listener"
 )
@@ -34,8 +33,8 @@ func (m *Matcher) Match(event *listener.Event) ([]Rule, error) {
 
 // matchRule 检查规则是否匹配事件
 func (m *Matcher) matchRule(rule *Rule, event *listener.Event) bool {
-	// 检查表名
-	if !m.matchTable(rule.Table, event.Table) {
+	// 检查表名（使用 database.table 格式）
+	if !m.matchTable(rule.Database, rule.Table, event.Table) {
 		return false
 	}
 
@@ -55,22 +54,15 @@ func (m *Matcher) matchRule(rule *Rule, event *listener.Event) bool {
 }
 
 // matchTable 匹配表名
-func (m *Matcher) matchTable(ruleTable, eventTable string) bool {
-	// 支持精确匹配和通配符
-	if ruleTable == eventTable {
-		return true
-	}
+// ruleDatabase: 规则中配置的数据库名
+// ruleTable: 规则中配置的表名
+// eventTable: 事件中的表名，格式为 "database.table"
+func (m *Matcher) matchTable(ruleDatabase, ruleTable, eventTable string) bool {
+	// 构建规则的完整表名
+	ruleFullTable := fmt.Sprintf("%s.%s", ruleDatabase, ruleTable)
 
-	// 支持 database.table 和 table 两种格式
-	// 如果规则是 "table"，匹配 "database.table"
-	if !strings.Contains(ruleTable, ".") {
-		parts := strings.Split(eventTable, ".")
-		if len(parts) == 2 && parts[1] == ruleTable {
-			return true
-		}
-	}
-
-	return false
+	// 精确匹配
+	return ruleFullTable == eventTable
 }
 
 // matchEvent 匹配事件类型

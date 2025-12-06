@@ -62,6 +62,13 @@ func NewApp(cfgPath string) (*App, error) {
 		return nil, err
 	}
 
+	// 从规则中提取需要监控的表列表
+	monitoredTables := engine.ExtractMonitoredTables(rulesConfig.Rules)
+	logger.Infof("从规则中解析出 %d 个监控表", len(monitoredTables))
+	for _, table := range monitoredTables {
+		logger.Infof("  监控表: %s", table)
+	}
+
 	// 创建匹配器
 	matcher := engine.NewMatcher(rulesConfig.Rules)
 
@@ -149,21 +156,20 @@ func NewApp(cfgPath string) (*App, error) {
 		logger.Infof("已启用 Redis 位置存储，键名: %s", cfg.Binlog.RedisStoreKey)
 	}
 
-	// 创建监听器（暂时不指定表，监控所有表）
+	// 创建监听器，使用从规则中解析出的监控表列表
 	// 配置位置保存间隔和是否在事务提交时保存
 	saveInterval := time.Duration(cfg.Binlog.SaveInterval) * time.Second
 	if saveInterval == 0 {
 		saveInterval = 5 * time.Second // 默认 5 秒
 	}
-	saveOnTransaction := cfg.Binlog.SaveOnTransaction
-	binlogListener, err := listener.NewBinlogListenerWithPositionStoreAndConfig(
-		canalCfg,
-		eventHandler,
-		nil,
-		posStore,
-		saveInterval,
-		saveOnTransaction,
-	)
+	binlogListener, err := listener.New(listener.Config{
+		CanalCfg:          canalCfg,
+		Handler:           eventHandler,
+		Tables:            monitoredTables,
+		PosStore:          posStore,
+		SaveInterval:      saveInterval,
+		SaveOnTransaction: cfg.Binlog.SaveOnTransaction,
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -3,19 +3,21 @@ package engine
 import (
 	"fmt"
 	"os"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Rule 规则定义
 type Rule struct {
-	ID      string       `yaml:"id"`
-	Name    string       `yaml:"name"`
-	Table   string       `yaml:"table"`
-	Events  []string     `yaml:"events"`
-	Filter  string       `yaml:"filter,omitempty"`
-	Actions []Action     `yaml:"actions"`
-	Batch   *BatchConfig `yaml:"batch,omitempty"`
+	ID       string       `yaml:"id"`
+	Name     string       `yaml:"name"`
+	Database string       `yaml:"database"` // 数据库名（必填）
+	Table    string       `yaml:"table"`   // 表名（必填）
+	Events   []string     `yaml:"events"`
+	Filter   string       `yaml:"filter,omitempty"`
+	Actions  []Action     `yaml:"actions"`
+	Batch    *BatchConfig `yaml:"batch,omitempty"`
 }
 
 // Action 动作定义
@@ -114,6 +116,9 @@ func validateRule(rule *Rule) error {
 	if rule.ID == "" {
 		return fmt.Errorf("规则 ID 不能为空")
 	}
+	if rule.Database == "" {
+		return fmt.Errorf("规则数据库名不能为空")
+	}
 	if rule.Table == "" {
 		return fmt.Errorf("规则表名不能为空")
 	}
@@ -137,4 +142,25 @@ func validateRule(rule *Rule) error {
 	}
 
 	return nil
+}
+
+// ExtractMonitoredTables 从规则列表中提取所有需要监控的表
+// 返回去重后的表列表，格式为 []string{"database.table"}
+func ExtractMonitoredTables(rules []Rule) []string {
+	tableMap := make(map[string]bool)
+	for _, rule := range rules {
+		tableName := fmt.Sprintf("%s.%s", rule.Database, rule.Table)
+		tableMap[tableName] = true
+	}
+
+	// 转换为切片并排序
+	tables := make([]string, 0, len(tableMap))
+	for table := range tableMap {
+		tables = append(tables, table)
+	}
+
+	// 排序以便输出更有序
+	sort.Strings(tables)
+
+	return tables
 }

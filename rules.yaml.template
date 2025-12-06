@@ -7,7 +7,8 @@
 # 3. 规则字段说明：
 #    - id: 规则唯一标识（必填）
 #    - name: 规则名称，用于日志显示（可选）
-#    - table: 监控的表名，支持格式 "database.table" 或 "table"（必填）
+#    - database: 监控的数据库名（必填）
+#    - table: 监控的表名（必填）
 #    - events: 监听的事件类型，可选: INSERT, UPDATE, DELETE（必填）
 #    - filter: CEL 表达式过滤条件，留空或 "true" 表示匹配所有（可选）
 #    - actions: 匹配后执行的动作列表（必填）
@@ -44,7 +45,8 @@ rules:
   # 当 users 表发生 UPDATE 或 DELETE 操作时，自动删除对应的 Redis 缓存
   - id: "user_cache_invalidate"
     name: "用户缓存失效"
-    table: "users"                    # 监控 users 表
+    database: "test_db"              # 监控的数据库名（必填）
+    table: "users"                    # 监控的表名（必填）
     events: ["UPDATE", "DELETE"]      # 监听更新和删除事件
     filter: "true"                    # 匹配所有更新和删除操作（可改为 CEL 表达式进行条件过滤）
     actions:
@@ -64,7 +66,8 @@ rules:
   # 当订单创建时，在系统 Redis 中记录统计信息
   - id: "order_statistics"
     name: "订单统计"
-    table: "orders"
+    database: "test_db"              # 监控的数据库名（必填）
+    table: "orders"                   # 监控的表名（必填）
     events: ["INSERT"]
     filter: "true"
     actions:
@@ -80,7 +83,8 @@ rules:
   # 当订单状态变更为 completed 时，发送 Webhook 通知
   - id: "order_status_notify"
     name: "订单状态变更通知"
-    table: "orders"                    # 监控 orders 表
+    database: "test_db"              # 监控的数据库名（必填）
+    table: "orders"                    # 监控的表名（必填）
     events: ["UPDATE"]                 # 仅监听更新事件
     filter: "true"                     # 可改为: "NewRow['status'] == 'completed' && OldRow['status'] != 'completed'"
     actions:
@@ -104,7 +108,8 @@ rules:
   # 当有新用户注册时，记录日志
   - id: "user_registered"
     name: "用户注册事件"
-    table: "users"                     # 监控 users 表
+    database: "test_db"              # 监控的数据库名（必填）
+    table: "users"                     # 监控的表名（必填）
     events: ["INSERT"]                 # 仅监听插入事件
     filter: "true"                     # 所有插入都触发
     actions:

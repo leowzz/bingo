@@ -19,6 +19,16 @@ type EventHandler interface {
 	OnEvent(event *Event) error
 }
 
+// Config Binlog 监听器配置
+type Config struct {
+	CanalCfg          *canal.Config // Canal 配置
+	Handler           EventHandler  // 事件处理器
+	Tables            []string      // 监控的表列表（格式：database.table）
+	PosStore          PositionStore // 位置存储（可选）
+	SaveInterval      time.Duration // 位置保存间隔（默认 5 秒）
+	SaveOnTransaction bool          // 是否在事务提交时保存位置（默认 true）
+}
+
 // BinlogListener Binlog 监听器
 type BinlogListener struct {
 	canal             *canal.Canal
@@ -32,33 +42,34 @@ type BinlogListener struct {
 	stopPeriodicSave  chan struct{}  // 停止定期保存的信号
 }
 
-// NewBinlogListener 创建新的 Binlog 监听器
-func NewBinlogListener(cfg *canal.Config, handler EventHandler, tables []string) (*BinlogListener, error) {
-	return NewBinlogListenerWithPositionStore(cfg, handler, tables, nil)
-}
-
-// NewBinlogListenerWithPositionStore 创建带位置存储的 Binlog 监听器
-func NewBinlogListenerWithPositionStore(cfg *canal.Config, handler EventHandler, tables []string, posStore PositionStore) (*BinlogListener, error) {
-	return NewBinlogListenerWithPositionStoreAndConfig(cfg, handler, tables, posStore, 5*time.Second, true)
-}
-
-// NewBinlogListenerWithPositionStoreAndConfig 创建带位置存储和配置的 Binlog 监听器
-func NewBinlogListenerWithPositionStoreAndConfig(cfg *canal.Config, handler EventHandler, tables []string, posStore PositionStore, saveInterval time.Duration, saveOnTransaction bool) (*BinlogListener, error) {
-	c, err := canal.NewCanal(cfg)
+// New 创建新的 Binlog 监听器
+func New(cfg Config) (*BinlogListener, error) {
+	c, err := canal.NewCanal(cfg.CanalCfg)
 	if err != nil {
 		return nil, fmt.Errorf("创建 Canal 实例失败: %w", err)
 	}
 
 	filterTables := make(map[string]bool)
-	for _, table := range tables {
+	for _, table := range cfg.Tables {
 		filterTables[table] = true
+	}
+
+	// 设置默认值
+	saveInterval := cfg.SaveInterval
+	if saveInterval == 0 {
+		saveInterval = 5 * time.Second
+	}
+	saveOnTransaction := cfg.SaveOnTransaction
+	// 如果未设置且没有位置存储，默认为 true
+	if !saveOnTransaction && cfg.PosStore == nil {
+		saveOnTransaction = true
 	}
 
 	listener := &BinlogListener{
 		canal:             c,
-		handler:           handler,
+		handler:           cfg.Handler,
 		filterTables:      filterTables,
-		posStore:          posStore,
+		posStore:          cfg.PosStore,
 		saveInterval:      saveInterval,
 		saveOnTransaction: saveOnTransaction,
 		stopPeriodicSave:  make(chan struct{}),
@@ -68,11 +79,22 @@ func NewBinlogListenerWithPositionStoreAndConfig(cfg *canal.Config, handler Even
 	c.SetEventHandler(listener)
 
 	// 如果配置了位置存储，启动定期保存任务
-	if posStore != nil && saveInterval > 0 {
+	if cfg.PosStore != nil && saveInterval > 0 {
 		go listener.startPeriodicSave()
 	}
 
 	return listener, nil
+}
+
+// NewBinlogListener 创建新的 Binlog 监听器（已废弃，请使用 New）
+//
+// Deprecated: 使用 New 函数替代
+func NewBinlogListener(cfg *canal.Config, handler EventHandler, tables []string) (*BinlogListener, error) {
+	return New(Config{
+		CanalCfg: cfg,
+		Handler:  handler,
+		Tables:   tables,
+	})
 }
 
 // Start 启动监听
