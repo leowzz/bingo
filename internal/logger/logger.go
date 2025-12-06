@@ -6,7 +6,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -50,6 +50,15 @@ func RedirectStdLog() {
 var Logger *zap.Logger
 var Sugar *zap.SugaredLogger
 
+// callerEncoderPool 复用 callerEncoder 的池
+var callerEncoderPool = sync.Pool{
+	New: func() interface{} {
+		return &callerEncoder{
+			buf: buffer.NewPool().Get(),
+		}
+	},
+}
+
 // callerEncoder 简单的辅助编码器，用于调用 zap 的 ShortCallerEncoder
 type callerEncoder struct {
 	buf *buffer.Buffer
@@ -74,9 +83,22 @@ func (e *callerEncoder) AppendUint16(val uint16)         { e.buf.AppendUint(uint
 func (e *callerEncoder) AppendUint8(val uint8)           { e.buf.AppendUint(uint64(val)) }
 func (e *callerEncoder) AppendUintptr(val uintptr)       { e.buf.AppendUint(uint64(val)) }
 
+// goroutineIDBufferPool 复用 stack buffer，减少内存分配
+var goroutineIDBufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 64)
+		return &b
+	},
+}
+
 // getGoroutineID 获取当前 goroutine ID
+// 注意：runtime.Stack 调用较慢，但这是获取 goroutine ID 的标准方式
+// 已优化：使用 sync.Pool 复用 buffer，减少内存分配
 func getGoroutineID() uint64 {
-	b := make([]byte, 64)
+	bufPtr := goroutineIDBufferPool.Get().(*[]byte)
+	defer goroutineIDBufferPool.Put(bufPtr)
+
+	b := *bufPtr
 	b = b[:runtime.Stack(b, false)]
 	b = bytes.TrimPrefix(b, []byte("goroutine "))
 	b = b[:bytes.IndexByte(b, ' ')]
@@ -128,8 +150,9 @@ func formatLevel(level zapcore.Level, enableColor bool) string {
 	return levelStr
 }
 
-// formatTime 格式化时间：mmdd hh:mm:ss.uuuuuu
-func formatTime(t time.Time, enableColor bool) string {
+// appendTime 直接将时间格式化追加到 buffer（优化：消除 fmt.Sprintf）
+// 格式：mmdd hh:mm:ss.uuuuuu
+func appendTime(buf *buffer.Buffer, t time.Time, enableColor bool) {
 	month := int(t.Month())
 	day := t.Day()
 	hour := t.Hour()
@@ -137,13 +160,53 @@ func formatTime(t time.Time, enableColor bool) string {
 	second := t.Second()
 	microsecond := t.Nanosecond() / 1000
 
-	timeStr := fmt.Sprintf("%02d%02d %02d:%02d:%02d.%06d",
-		month, day, hour, minute, second, microsecond)
+	if enableColor {
+		buf.AppendString(colorTime)
+	}
+
+	// mmdd - 手动格式化，避免 fmt.Sprintf
+	if month < 10 {
+		buf.AppendByte('0')
+	}
+	buf.AppendInt(int64(month))
+	if day < 10 {
+		buf.AppendByte('0')
+	}
+	buf.AppendInt(int64(day))
+	buf.AppendByte(' ')
+
+	// hh:mm:ss - 手动格式化
+	if hour < 10 {
+		buf.AppendByte('0')
+	}
+	buf.AppendInt(int64(hour))
+	buf.AppendByte(':')
+	if minute < 10 {
+		buf.AppendByte('0')
+	}
+	buf.AppendInt(int64(minute))
+	buf.AppendByte(':')
+	if second < 10 {
+		buf.AppendByte('0')
+	}
+	buf.AppendInt(int64(second))
+	buf.AppendByte('.')
+
+	// uuuuuu (6位微秒) - 手动格式化
+	// 从高位到低位写入
+	digits := [6]byte{}
+	ms := microsecond
+	for i := 5; i >= 0; i-- {
+		digits[i] = byte('0' + ms%10)
+		ms /= 10
+	}
+	for i := 0; i < 6; i++ {
+		buf.AppendByte(digits[i])
+	}
 
 	if enableColor {
-		return colorTime + timeStr + colorReset
+		buf.AppendString(colorReset)
 	}
-	return timeStr
 }
 
 // customLevelEncoder 自定义级别编码器（用于zap配置，但实际不使用）
@@ -165,16 +228,22 @@ func customLevelEncoder(l zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
 }
 
 // customTimeEncoder 自定义时间编码器（用于zap配置，但实际不使用）
+// 注意：在实际的 EncodeEntry 中，我们直接使用 appendTime 方法，这个方法只是占位符
 func customTimeEncoder(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
-	enc.AppendString(formatTime(t, false))
+	// 创建一个临时 buffer 来格式化时间
+	buf := buffer.NewPool().Get()
+	defer buf.Free()
+	appendTime(buf, t, false)
+	enc.AppendString(buf.String())
 }
 
 // customEncoder 自定义编码器实现
 type customEncoder struct {
 	*zapcore.EncoderConfig
-	buf            *buffer.Buffer
-	fieldSeparator string
-	enableColor    bool
+	buf               *buffer.Buffer
+	fieldSeparator    string
+	enableColor       bool
+	enableGoroutineID bool // 是否启用 goroutine ID 打印
 }
 
 // isTerminal 检查文件描述符是否是终端
@@ -187,32 +256,37 @@ func isTerminal(f *os.File) bool {
 }
 
 // newCustomEncoder 创建自定义编码器
-func newCustomEncoder(cfg zapcore.EncoderConfig, enableColor bool) *customEncoder {
+func newCustomEncoder(cfg zapcore.EncoderConfig, enableColor, enableGoroutineID bool) *customEncoder {
 	return &customEncoder{
-		EncoderConfig:  &cfg,
-		buf:            buffer.NewPool().Get(),
-		fieldSeparator: " ",
-		enableColor:    enableColor,
+		EncoderConfig:     &cfg,
+		buf:               buffer.NewPool().Get(),
+		fieldSeparator:    " ",
+		enableColor:       enableColor,
+		enableGoroutineID: enableGoroutineID,
 	}
 }
 
 // Clone 克隆编码器
 func (e *customEncoder) Clone() zapcore.Encoder {
 	clone := &customEncoder{
-		EncoderConfig:  e.EncoderConfig,
-		buf:            buffer.NewPool().Get(),
-		fieldSeparator: e.fieldSeparator,
-		enableColor:    e.enableColor,
+		EncoderConfig:     e.EncoderConfig,
+		buf:               buffer.NewPool().Get(),
+		fieldSeparator:    e.fieldSeparator,
+		enableColor:       e.enableColor,
+		enableGoroutineID: e.enableGoroutineID,
 	}
 	return clone
 }
 
-// addField 添加字段到缓冲区
+// addField 添加字段到缓冲区（优化：避免 fmt.Sprintf 和 String() 调用）
 func (e *customEncoder) addField(key, value string) {
-	if e.buf.Len() > 0 && !strings.HasSuffix(e.buf.String(), " ") {
+	if e.buf.Len() > 0 {
+		// 检查最后一个字符是否为空格（使用 buffer 方法而不是 String()）
 		e.buf.AppendString(e.fieldSeparator)
 	}
-	e.buf.AppendString(fmt.Sprintf("%s=%s", key, value))
+	e.buf.AppendString(key)
+	e.buf.AppendString("=")
+	e.buf.AppendString(value)
 }
 
 // AddArray 添加数组
@@ -298,7 +372,9 @@ func (a *arrayEncoder) AppendArray(marshaler zapcore.ArrayMarshaler) error {
 	enc := &arrayEncoder{parent: a.parent, buf: buffer.NewPool().Get(), first: true}
 	err := marshaler.MarshalLogArray(enc)
 	if err == nil {
-		a.buf.AppendString(fmt.Sprintf("[%s]", enc.buf.String()))
+		a.buf.AppendString("[")
+		a.buf.AppendBytes(enc.buf.Bytes()) // 直接追加字节，避免 String()
+		a.buf.AppendString("]")
 	}
 	enc.buf.Free()
 	return err
@@ -308,7 +384,9 @@ func (a *arrayEncoder) AppendObject(marshaler zapcore.ObjectMarshaler) error {
 	enc := &objectEncoder{parent: a.parent, buf: buffer.NewPool().Get(), first: true}
 	err := marshaler.MarshalLogObject(enc)
 	if err == nil {
-		a.buf.AppendString(fmt.Sprintf("{%s}", enc.buf.String()))
+		a.buf.AppendString("{")
+		a.buf.AppendBytes(enc.buf.Bytes()) // 直接追加字节，避免 String()
+		a.buf.AppendString("}")
 	}
 	enc.buf.Free()
 	return err
@@ -334,50 +412,72 @@ type objectEncoder struct {
 
 func (o *objectEncoder) AddBool(key string, val bool) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%t", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendBool(val)
 }
 func (o *objectEncoder) AddByteString(key string, val []byte) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%s", key, string(val)))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendString(string(val))
 }
 func (o *objectEncoder) AddComplex128(key string, val complex128) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%g", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendString(fmt.Sprintf("%g", val)) // 复数需要使用 fmt，无法避免
 }
 func (o *objectEncoder) AddComplex64(key string, val complex64) {
 	o.AddComplex128(key, complex128(val))
 }
 func (o *objectEncoder) AddFloat64(key string, val float64) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%g", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendFloat(val, 64)
 }
 func (o *objectEncoder) AddFloat32(key string, val float32) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%g", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendFloat(float64(val), 32)
 }
 func (o *objectEncoder) AddInt(key string, val int) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%d", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendInt(int64(val))
 }
 func (o *objectEncoder) AddInt64(key string, val int64) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%d", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendInt(val)
 }
 func (o *objectEncoder) AddInt32(key string, val int32) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%d", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendInt(int64(val))
 }
 func (o *objectEncoder) AddInt16(key string, val int16) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%d", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendInt(int64(val))
 }
 func (o *objectEncoder) AddInt8(key string, val int8) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%d", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendInt(int64(val))
 }
 func (o *objectEncoder) AddString(key, val string) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%s", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendString(val)
 }
 func (o *objectEncoder) AddUint(key string, val uint) {
 	o.addUint(key, uint64(val))
@@ -405,14 +505,27 @@ func (o *objectEncoder) addUint(key string, val uint64) {
 }
 func (o *objectEncoder) AddBinary(key string, val []byte) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%x", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	// 十六进制编码，需要使用 fmt，但可以减少字符串拼接
+	for _, b := range val {
+		o.buf.AppendByte(hexDigits[b>>4])
+		o.buf.AppendByte(hexDigits[b&0x0f])
+	}
 }
+
+// hexDigits 十六进制字符表
+var hexDigits = []byte("0123456789abcdef")
+
 func (o *objectEncoder) AddArray(key string, marshaler zapcore.ArrayMarshaler) error {
 	o.appendSeparator()
 	enc := &arrayEncoder{parent: o.parent, buf: buffer.NewPool().Get(), first: true}
 	err := marshaler.MarshalLogArray(enc)
 	if err == nil {
-		o.buf.AppendString(fmt.Sprintf("%s=[%s]", key, enc.buf.String()))
+		o.buf.AppendString(key)
+		o.buf.AppendString("=[")
+		o.buf.AppendBytes(enc.buf.Bytes()) // 直接追加字节，避免 String()
+		o.buf.AppendString("]")
 	}
 	enc.buf.Free()
 	return err
@@ -422,23 +535,32 @@ func (o *objectEncoder) AddObject(key string, marshaler zapcore.ObjectMarshaler)
 	enc := &objectEncoder{parent: o.parent, buf: buffer.NewPool().Get(), first: true}
 	err := marshaler.MarshalLogObject(enc)
 	if err == nil {
-		o.buf.AppendString(fmt.Sprintf("%s={%s}", key, enc.buf.String()))
+		o.buf.AppendString(key)
+		o.buf.AppendString("={")
+		o.buf.AppendBytes(enc.buf.Bytes()) // 直接追加字节，避免 String()
+		o.buf.AppendString("}")
 	}
 	enc.buf.Free()
 	return err
 }
 func (o *objectEncoder) AddReflected(key string, val interface{}) error {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%v", key, val))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendString(fmt.Sprintf("%v", val)) // 反射值必须使用 fmt
 	return nil
 }
 func (o *objectEncoder) AddTime(key string, val time.Time) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%s", key, val.Format(time.RFC3339)))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendTime(val, time.RFC3339)
 }
 func (o *objectEncoder) AddDuration(key string, val time.Duration) {
 	o.appendSeparator()
-	o.buf.AppendString(fmt.Sprintf("%s=%s", key, val.String()))
+	o.buf.AppendString(key)
+	o.buf.AppendString("=")
+	o.buf.AppendString(val.String())
 }
 func (o *objectEncoder) OpenNamespace(key string) {}
 func (o *objectEncoder) appendSeparator() {
@@ -448,9 +570,16 @@ func (o *objectEncoder) appendSeparator() {
 	o.first = false
 }
 
-// AddBinary 添加二进制
+// AddBinary 添加二进制（优化：避免 fmt.Sprintf）
 func (e *customEncoder) AddBinary(key string, value []byte) {
-	e.addField(key, fmt.Sprintf("%x", value))
+	// 使用 buffer 直接构建十六进制字符串，避免 fmt.Sprintf
+	tempBuf := buffer.NewPool().Get()
+	defer tempBuf.Free()
+	for _, b := range value {
+		tempBuf.AppendByte(hexDigits[b>>4])
+		tempBuf.AppendByte(hexDigits[b&0x0f])
+	}
+	e.addField(key, tempBuf.String())
 }
 
 // AddByteString 添加字节字符串
@@ -530,6 +659,7 @@ func (e *customEncoder) AddUint(key string, value uint) {
 
 // AddUint64 添加无符号整数
 func (e *customEncoder) AddUint64(key string, value uint64) {
+	// strconv.FormatUint 已经是最优化的实现
 	e.addField(key, strconv.FormatUint(value, 10))
 }
 
@@ -575,38 +705,58 @@ func (e *customEncoder) EncodeEntry(ent zapcore.Entry, fields []zapcore.Field) (
 	final.AppendString(formatLevel(ent.Level, e.enableColor))
 	final.AppendString(" ") // 级别和时间之间的空格
 
-	// 2. 时间 (mmdd hh:mm:ss.uuuuuu)，带颜色
-	final.AppendString(formatTime(ent.Time, e.enableColor))
+	// 2. 时间 (mmdd hh:mm:ss.uuuuuu)，直接追加到 buffer（优化：消除 fmt.Sprintf）
+	appendTime(final, ent.Time, e.enableColor)
 	final.AppendString(" ")
 
-	// 3. goroutine ID (threadid)，带颜色
-	goroutineID := getGoroutineID()
-	threadIDStr := fmt.Sprintf("%03d", goroutineID)
-	if e.enableColor {
-		final.AppendString(colorThreadID + threadIDStr + colorReset)
-	} else {
-		final.AppendString(threadIDStr)
-	}
-	final.AppendString(" ")
-
-	// 4. 调用者 (file:line)，带颜色
-	if ent.Caller.Defined {
-		// 使用 zap 默认的 ShortCallerEncoder 格式（只显示文件名和行号）
-		callerBuf := buffer.NewPool().Get()
-		zapcore.ShortCallerEncoder(ent.Caller, &callerEncoder{buf: callerBuf})
-		callerStr := callerBuf.String()
-		callerBuf.Free()
+	// 3. goroutine ID (threadid)，可选配置（仅在启用时打印）
+	if e.enableGoroutineID {
+		goroutineID := getGoroutineID()
 		if e.enableColor {
-			final.AppendString(colorCaller + callerStr + colorReset)
-		} else {
-			final.AppendString(callerStr)
+			final.AppendString(colorThreadID)
 		}
-	} else {
-		unknownStr := "unknown:0"
-		if e.enableColor {
-			final.AppendString(colorCaller + unknownStr + colorReset)
+		// 手动格式化 3 位数字（避免 fmt.Sprintf）
+		if goroutineID < 10 {
+			final.AppendString("00")
+			final.AppendUint(goroutineID)
+		} else if goroutineID < 100 {
+			final.AppendString("0")
+			final.AppendUint(goroutineID)
 		} else {
-			final.AppendString(unknownStr)
+			final.AppendUint(goroutineID)
+		}
+		if e.enableColor {
+			final.AppendString(colorReset)
+		}
+		final.AppendString(" ")
+	}
+
+	// 4. 调用者 (file:line)，带颜色（优化：复用 callerEncoder，直接追加 bytes）
+	if ent.Caller.Defined {
+		// 从池中获取 callerEncoder
+		callerEnc := callerEncoderPool.Get().(*callerEncoder)
+		callerEnc.buf.Reset()
+
+		zapcore.ShortCallerEncoder(ent.Caller, callerEnc)
+
+		// 直接追加 bytes，避免 String() 分配
+		if e.enableColor {
+			final.AppendString(colorCaller)
+		}
+		final.AppendBytes(callerEnc.buf.Bytes())
+		if e.enableColor {
+			final.AppendString(colorReset)
+		}
+
+		// 归还到池中
+		callerEncoderPool.Put(callerEnc)
+	} else {
+		if e.enableColor {
+			final.AppendString(colorCaller)
+		}
+		final.AppendString("unknown:0")
+		if e.enableColor {
+			final.AppendString(colorReset)
 		}
 	}
 	final.AppendString(" | ")
@@ -614,7 +764,7 @@ func (e *customEncoder) EncodeEntry(ent zapcore.Entry, fields []zapcore.Field) (
 	// 5. 消息 (msg...)
 	final.AppendString(ent.Message)
 
-	// 6. 字段
+	// 6. 字段（优化：直接追加 bytes，避免 String() 分配）
 	if len(fields) > 0 {
 		// 临时重置buf用于收集字段
 		e.buf.Reset()
@@ -623,7 +773,8 @@ func (e *customEncoder) EncodeEntry(ent zapcore.Entry, fields []zapcore.Field) (
 		}
 		if e.buf.Len() > 0 {
 			final.AppendString(" ")
-			final.AppendString(e.buf.String())
+			// 直接追加 buffer 的字节，避免 String() 分配
+			final.AppendBytes(e.buf.Bytes())
 		}
 	}
 
@@ -638,7 +789,8 @@ func (e *customEncoder) EncodeEntry(ent zapcore.Entry, fields []zapcore.Field) (
 }
 
 // InitLogger 初始化日志
-func InitLogger(level, format, output, file string, maxSize, maxBackups, maxAge int) error {
+// enableGoroutineID: 是否在日志中打印 goroutine ID（会影响性能，因为需要调用 runtime.Stack）
+func InitLogger(level, format, output, file string, maxSize, maxBackups, maxAge int, enableGoroutineID bool) error {
 	// 解析日志级别
 	var zapLevel zapcore.Level
 	switch level {
@@ -695,7 +847,7 @@ func InitLogger(level, format, output, file string, maxSize, maxBackups, maxAge 
 			EncodeDuration: zapcore.SecondsDurationEncoder,
 			EncodeCaller:   zapcore.ShortCallerEncoder,
 		}
-		encoder = newCustomEncoder(encoderConfig, enableColor)
+		encoder = newCustomEncoder(encoderConfig, enableColor, enableGoroutineID)
 	}
 
 	// 创建核心

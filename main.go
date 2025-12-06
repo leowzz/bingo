@@ -50,6 +50,7 @@ func NewApp(cfgPath string) (*App, error) {
 		cfg.Logging.MaxSize,
 		cfg.Logging.MaxBackups,
 		cfg.Logging.MaxAge,
+		cfg.Logging.EnableGoroutineID, // 从配置文件读取
 	); err != nil {
 		return nil, err
 	}

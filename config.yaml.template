@@ -57,4 +57,6 @@ logging:
   max_size: 100           # 单个日志文件最大大小（MB），超过后自动轮转
   max_backups: 10         # 保留的日志文件备份数量
   max_age: 30             # 日志文件保留天数，超过后自动删除
+  enable_goroutine_id: true  # 是否在日志中打印 goroutine ID（会影响性能，默认 true）
+                             # 设置为 false 可以提升性能，但会失去 goroutine 追踪信息
 

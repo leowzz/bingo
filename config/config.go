@@ -67,13 +67,14 @@ type PerformanceConfig struct {
 
 // LoggingConfig 日志配置
 type LoggingConfig struct {
-	Level      string `yaml:"level"`       // debug, info, warn, error
-	Format     string `yaml:"format"`      // json, text
-	Output     string `yaml:"output"`      // stdout, file
-	File       string `yaml:"file"`        // 日志文件路径
-	MaxSize    int    `yaml:"max_size"`    // 最大文件大小（MB）
-	MaxBackups int    `yaml:"max_backups"` // 最大备份数
-	MaxAge     int    `yaml:"max_age"`     // 最大保留天数
+	Level             string `yaml:"level"`               // debug, info, warn, error
+	Format            string `yaml:"format"`              // json, text
+	Output            string `yaml:"output"`              // stdout, file
+	File              string `yaml:"file"`                // 日志文件路径
+	MaxSize           int    `yaml:"max_size"`            // 最大文件大小（MB）
+	MaxBackups        int    `yaml:"max_backups"`         // 最大备份数
+	MaxAge            int    `yaml:"max_age"`             // 最大保留天数
+	EnableGoroutineID bool   `yaml:"enable_goroutine_id"` // 是否在日志中打印 goroutine ID（会影响性能），默认 true
 }
 
 // LoadConfig 从文件加载配置
@@ -123,6 +124,11 @@ func (c *Config) setDefaults() {
 	if c.Logging.Output == "" {
 		c.Logging.Output = "stdout"
 	}
+	// EnableGoroutineID 默认为 true
+	// 注意：由于 bool 类型无法区分"未设置"和"设置为 false"（零值都是 false）
+	// 我们采用在配置模板中默认设置为 true 的方式
+	// 如果用户需要禁用，必须在配置文件中显式设置 enable_goroutine_id: false
+	// 这里不做默认值设置，保持配置文件中的值
 	if c.Binlog.RedisStoreKey == "" {
 		c.Binlog.RedisStoreKey = "bingo:binlog:position"
 	}
