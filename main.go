@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -335,12 +336,24 @@ func main() {
 		if logger.Logger == nil {
 			zap.L().Fatal("创建应用失败", zap.Error(err))
 		} else {
-			logger.Fatalw("创建应用失败", "error", err)
+			// 使用 fmt.Printf 打印错误，确保换行生效
+			fmt.Fprintf(os.Stderr, "创建应用失败: %v\n", err)
+			// 如果错误包含详细堆栈信息，也打印出来
+			if errVerbose, ok := err.(interface{ ErrorVerbose() string }); ok {
+				fmt.Fprintf(os.Stderr, "\n详细错误信息:\n%s\n", errVerbose.ErrorVerbose())
+			}
+			os.Exit(1)
 		}
 	}
 
 	// 启动应用
 	if err := app.Start(); err != nil {
-		logger.Fatalw("启动应用失败", "error", err)
+		// 使用 fmt.Printf 打印错误，确保换行生效
+		fmt.Fprintf(os.Stderr, "启动应用失败: %v\n", err)
+		// 如果错误包含详细堆栈信息，也打印出来
+		if errVerbose, ok := err.(interface{ ErrorVerbose() string }); ok {
+			fmt.Fprintf(os.Stderr, "\n详细错误信息:\n%s\n", errVerbose.ErrorVerbose())
+		}
+		os.Exit(1)
 	}
 }
