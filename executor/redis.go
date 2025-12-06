@@ -317,6 +317,119 @@ func (r *RedisExecutor) HasConnections() bool {
 	return len(r.clients) > 0
 }
 
+// RemoveConnection 删除指定的 Redis 连接
+//
+// 不会删除 "system" 和 "default" 连接，这些是系统保留的连接。
+func (r *RedisExecutor) RemoveConnection(name string) error {
+	// 保护系统连接
+	if name == "system" || name == "default" {
+		return fmt.Errorf("不能删除系统保留的连接: %s", name)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	client, exists := r.clients[name]
+	if !exists {
+		return fmt.Errorf("连接不存在: %s", name)
+	}
+
+	if err := client.Close(); err != nil {
+		logger.Warnw("关闭 Redis 连接失败", "name", name, "error", err)
+	} else {
+		logger.Debugw("关闭 Redis 连接成功", "name", name)
+	}
+
+	delete(r.clients, name)
+	logger.Infow("删除 Redis 连接", "name", name)
+	return nil
+}
+
+// GetConnectionNames 获取所有连接名称
+func (r *RedisExecutor) GetConnectionNames() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.clients))
+	for name := range r.clients {
+		names = append(names, name)
+	}
+	return names
+}
+
+// UpdateConnections 批量更新 Redis 连接配置
+//
+// 根据新的连接配置列表，添加新的连接、更新已存在的连接、删除不存在的连接。
+// 不会删除 "system" 和 "default" 连接。
+func (r *RedisExecutor) UpdateConnections(connections []engine.RedisConnectionConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// 构建新连接名称集合
+	newConnNames := make(map[string]bool)
+	for _, conn := range connections {
+		// 跳过系统保留的连接名
+		if conn.Name == "system" || conn.Name == "default" {
+			logger.Warnf("跳过系统保留的连接名: %s", conn.Name)
+			continue
+		}
+		newConnNames[conn.Name] = true
+	}
+
+	// 找出需要删除的连接（不在新配置中的，且不是系统保留的）
+	toRemove := make([]string, 0)
+	for name := range r.clients {
+		if name != "system" && name != "default" && !newConnNames[name] {
+			toRemove = append(toRemove, name)
+		}
+	}
+
+	// 删除不需要的连接
+	for _, name := range toRemove {
+		if client, exists := r.clients[name]; exists {
+			if err := client.Close(); err != nil {
+				logger.Warnw("关闭 Redis 连接失败", "name", name, "error", err)
+			}
+			delete(r.clients, name)
+			logger.Infow("删除 Redis 连接", "name", name)
+		}
+	}
+
+	// 添加或更新连接
+	for _, conn := range connections {
+		// 跳过系统保留的连接名
+		if conn.Name == "system" || conn.Name == "default" {
+			continue
+		}
+
+		// 如果连接已存在，先关闭旧连接
+		if oldClient, exists := r.clients[conn.Name]; exists {
+			// 检查连接配置是否改变
+			// 这里简化处理，直接关闭旧连接创建新连接
+			oldClient.Close()
+		}
+
+		// 创建新连接
+		client := redis.NewClient(&redis.Options{
+			Addr:     conn.Addr,
+			Password: conn.Password,
+			DB:       conn.DB,
+		})
+
+		// 测试连接
+		ctx := context.Background()
+		if err := client.Ping(ctx).Err(); err != nil {
+			logger.Warnw("Redis 连接失败，跳过", "name", conn.Name, "addr", conn.Addr, "error", err)
+			continue
+		}
+
+		r.clients[conn.Name] = client
+		logger.Infow("更新 Redis 连接", "name", conn.Name, "addr", conn.Addr, "db", conn.DB)
+	}
+
+	return nil
+}
+
 // Close 关闭所有 Redis 连接
 func (r *RedisExecutor) Close() {
 	r.mu.Lock()

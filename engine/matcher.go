@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"sync"
 
 	"bingo/listener"
 )
@@ -9,6 +10,7 @@ import (
 // Matcher 规则匹配器
 type Matcher struct {
 	rules []Rule
+	mu    sync.RWMutex // 保护规则列表的并发访问
 }
 
 // NewMatcher 创建新的匹配器
@@ -20,9 +22,12 @@ func NewMatcher(rules []Rule) *Matcher {
 
 // Match 匹配事件，返回匹配的规则列表
 func (m *Matcher) Match(event *listener.Event) ([]Rule, error) {
-	var matched []Rule
+	m.mu.RLock()
+	rules := m.rules
+	m.mu.RUnlock()
 
-	for _, rule := range m.rules {
+	var matched []Rule
+	for _, rule := range rules {
 		if m.matchRule(&rule, event) {
 			matched = append(matched, rule)
 		}
@@ -90,15 +95,28 @@ func (m *Matcher) matchFilter(filter string, event *listener.Event) bool {
 
 // GetRules 获取所有规则
 func (m *Matcher) GetRules() []Rule {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.rules
 }
 
 // GetRuleByID 根据 ID 获取规则
 func (m *Matcher) GetRuleByID(id string) (*Rule, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for _, rule := range m.rules {
 		if rule.ID == id {
 			return &rule, nil
 		}
 	}
 	return nil, fmt.Errorf("规则不存在: %s", id)
+}
+
+// UpdateRules 更新规则列表（线程安全）
+//
+// 用于热重载规则文件时更新规则列表。
+func (m *Matcher) UpdateRules(rules []Rule) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rules = rules
 }

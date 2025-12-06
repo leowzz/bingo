@@ -31,6 +31,8 @@ type App struct {
 	executor     *executor.Executor
 	listener     *listener.BinlogListener
 	eventHandler *EventHandler
+	reloader     *config.Reloader
+	redisExec    *executor.RedisExecutor
 }
 
 // NewApp 创建新的应用实例
@@ -180,10 +182,26 @@ func NewApp(cfgPath string) (*App, error) {
 		executor:     exec,
 		listener:     binlogListener,
 		eventHandler: eventHandler,
+		redisExec:    redisExec,
 	}
 
 	// 启动事件处理器工作池
 	eventHandler.Start()
+
+	// 初始化并启动规则文件热重载
+	reloader, err := config.NewReloader(
+		cfg.RulesFile,
+		app.reloadRules,
+		500*time.Millisecond, // 防抖时间 500ms
+	)
+	if err != nil {
+		logger.Warnf("初始化规则文件热重载失败: %v", err)
+	} else {
+		app.reloader = reloader
+		if err := reloader.Start(); err != nil {
+			logger.Warnf("启动规则文件热重载失败: %v", err)
+		}
+	}
 
 	return app, nil
 }
@@ -226,8 +244,33 @@ func (a *App) Start() error {
 	return a.listener.Start()
 }
 
+// reloadRules 重载规则的回调函数
+func (a *App) reloadRules(rulesConfig *engine.RulesConfig) error {
+	logger.Info("开始重载规则...")
+
+	// 更新匹配器的规则
+	a.matcher.UpdateRules(rulesConfig.Rules)
+	logger.Infof("已更新 %d 条规则", len(rulesConfig.Rules))
+
+	// 更新 Redis 连接配置
+	if a.redisExec != nil {
+		if err := a.redisExec.UpdateConnections(rulesConfig.RedisConnections); err != nil {
+			logger.Warnw("更新 Redis 连接配置失败", "error", err)
+			// 不返回错误，因为规则已经更新成功
+		}
+	}
+
+	logger.Info("规则重载完成")
+	return nil
+}
+
 // Stop 停止应用
 func (a *App) Stop() {
+	// 停止规则文件热重载
+	if a.reloader != nil {
+		a.reloader.Stop()
+	}
+
 	// 先停止事件处理器，等待工作池完成当前任务
 	if a.eventHandler != nil {
 		a.eventHandler.Stop()

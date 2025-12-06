@@ -14,6 +14,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // YAML 文件解析库, 用于配置文件和规则文件读取
 )
 
+require github.com/fsnotify/fsnotify v1.9.0
+
 require (
 	cel.dev/expr v0.24.0 // indirect
 	filippo.io/edwards25519 v1.1.0 // indirect
