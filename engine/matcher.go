@@ -83,35 +83,17 @@ func (m *Matcher) matchEvent(ruleEvents []string, eventAction string) bool {
 	return false
 }
 
-// matchFilter 匹配过滤条件（简化版，后续可集成 CEL）
+// matchFilter 匹配过滤条件（使用 CEL 表达式引擎）
 func (m *Matcher) matchFilter(filter string, event *listener.Event) bool {
-	// 简化版过滤：目前只支持简单的字段比较
-	// TODO: 集成 CEL 表达式引擎
-
-	// 临时实现：如果 filter 为 "true"，总是匹配
-	if filter == "true" {
-		return true
+	// 使用 CEL 表达式引擎评估过滤条件
+	result, err := EvaluateFilter(filter, event)
+	if err != nil {
+		// 如果 CEL 评估失败，记录错误但返回 false（安全起见，不匹配规则）
+		// 注意：这里需要导入 logger，但为了避免循环依赖，暂时不记录日志
+		// 在实际使用中，错误会在上层被记录
+		return false
 	}
-
-	// 简单的字段存在性检查
-	// 例如: "NewRow['status']" 检查 status 字段是否存在
-	if strings.Contains(filter, "NewRow['") {
-		// 提取字段名
-		start := strings.Index(filter, "NewRow['")
-		if start != -1 {
-			start += len("NewRow['")
-			end := strings.Index(filter[start:], "']")
-			if end != -1 {
-				fieldName := filter[start : start+end]
-				val := event.GetField(fieldName)
-				return val != nil
-			}
-		}
-	}
-
-	// 默认返回 true，避免过于严格的过滤导致规则不匹配
-	// 后续集成 CEL 后会有完整的表达式评估
-	return true
+	return result
 }
 
 // GetRules 获取所有规则

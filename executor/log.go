@@ -2,10 +2,11 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"log"
 
 	"bingo/engine"
+	"bingo/internal/logger"
 	"bingo/listener"
 	"bingo/utils"
 )
@@ -37,17 +38,60 @@ func (l *LogExecutor) Execute(ctx context.Context, action engine.Action, event *
 		level = "info"
 	}
 
-	switch level {
-	case "debug":
-		log.Printf("[DEBUG] %s", renderedMsg)
-	case "info":
-		log.Printf("[INFO] %s", renderedMsg)
-	case "warn":
-		log.Printf("[WARN] %s", renderedMsg)
-	case "error":
-		log.Printf("[ERROR] %s", renderedMsg)
-	default:
-		log.Printf("[INFO] %s", renderedMsg)
+	// 准备日志字段
+	logFields := []interface{}{
+		"table", event.Table,
+		"action", event.Action,
+		"schema", event.Schema,
+		"table_name", event.TableName,
+	}
+
+	// 如果 format 为 json，输出 JSON 格式
+	format := "text"            // 默认文本格式
+	if action.Level == "json" { // 这里可以扩展 Action 结构体添加 Format 字段
+		format = "json"
+	}
+
+	if format == "json" {
+		// JSON 格式输出
+		logData := map[string]interface{}{
+			"message":    renderedMsg,
+			"table":      event.Table,
+			"action":     string(event.Action),
+			"schema":     event.Schema,
+			"table_name": event.TableName,
+			"timestamp":  event.Timestamp,
+		}
+		if event.NewRow != nil {
+			logData["new_row"] = event.NewRow
+		}
+		if event.OldRow != nil {
+			logData["old_row"] = event.OldRow
+		}
+
+		jsonBytes, err := json.Marshal(logData)
+		if err != nil {
+			// 如果 JSON 序列化失败，回退到文本格式
+			logger.Infow(renderedMsg, logFields...)
+		} else {
+			// 使用 logger 输出 JSON
+			logFields = append(logFields, "json_data", string(jsonBytes))
+			logger.Infow(renderedMsg, logFields...)
+		}
+	} else {
+		// 文本格式输出
+		switch level {
+		case "debug":
+			logger.Debugw(renderedMsg, logFields...)
+		case "info":
+			logger.Infow(renderedMsg, logFields...)
+		case "warn":
+			logger.Warnw(renderedMsg, logFields...)
+		case "error":
+			logger.Errorw(renderedMsg, logFields...)
+		default:
+			logger.Infow(renderedMsg, logFields...)
+		}
 	}
 
 	return nil

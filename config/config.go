@@ -10,7 +10,7 @@ import (
 // Config 应用配置
 type Config struct {
 	MySQL       MySQLConfig       `yaml:"mysql"`
-	Redis       RedisConfig       `yaml:"redis"`
+	SystemRedis RedisConfig       `yaml:"system_redis"` // 系统使用的 Redis（用于位置存储等）
 	Binlog      BinlogConfig      `yaml:"binlog"`
 	RulesFile   string            `yaml:"rules_file"`
 	Performance PerformanceConfig `yaml:"performance"`
@@ -38,12 +38,22 @@ type RedisConfig struct {
 	DB       int    `yaml:"db"`
 }
 
+// RedisConnection Redis 连接配置（用于规则中的 Redis 动作）
+type RedisConnection struct {
+	Name     string `yaml:"name"`     // 连接名称
+	Addr     string `yaml:"addr"`     // Redis 服务器地址
+	Password string `yaml:"password"` // Redis 密码
+	DB       int    `yaml:"db"`       // Redis 数据库编号
+}
+
 // BinlogConfig Binlog 位置配置
 type BinlogConfig struct {
-	File          string `yaml:"file"`
-	Position      uint32 `yaml:"position"`
-	UseRedisStore bool   `yaml:"use_redis_store"` // 是否使用 Redis 存储位置
-	RedisStoreKey string `yaml:"redis_store_key"` // Redis 存储键名
+	File              string `yaml:"file"`
+	Position          uint32 `yaml:"position"`
+	UseRedisStore     bool   `yaml:"use_redis_store"`     // 是否使用 Redis 存储位置
+	RedisStoreKey     string `yaml:"redis_store_key"`     // Redis 存储键名
+	SaveInterval      int    `yaml:"save_interval"`       // 位置保存间隔（秒），默认 5 秒，设置为 0 禁用定期保存
+	SaveOnTransaction bool   `yaml:"save_on_transaction"` // 是否在事务提交时保存位置，默认 true
 }
 
 // PerformanceConfig 性能配置
@@ -115,5 +125,15 @@ func (c *Config) setDefaults() {
 	}
 	if c.Binlog.RedisStoreKey == "" {
 		c.Binlog.RedisStoreKey = "bingo:binlog:position"
+	}
+	if c.Binlog.SaveInterval == 0 {
+		c.Binlog.SaveInterval = 5 // 默认 5 秒
+	}
+	if c.Binlog.SaveOnTransaction {
+		// 默认值已经是 true，但如果显式设置为 false，则保持 false
+		// 这里不需要额外处理
+	} else {
+		// 如果未设置，默认为 true
+		c.Binlog.SaveOnTransaction = true
 	}
 }

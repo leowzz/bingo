@@ -28,6 +28,8 @@ func NewExecutor() *Executor {
 	// 注册默认执行器
 	exec.Register(NewWebhookExecutor())
 	exec.Register(&LogExecutor{})
+	exec.Register(&KafkaExecutor{})
+	exec.Register(&GrpcExecutor{})
 
 	return exec
 }

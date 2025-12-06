@@ -12,6 +12,10 @@
 #    - filter: CEL 表达式过滤条件，留空或 "true" 表示匹配所有（可选）
 #    - actions: 匹配后执行的动作列表（必填）
 #
+# Redis 连接配置：
+#   可以在 rules.yaml 中定义多个 Redis 连接，规则中的 Redis 动作可以指定使用哪个连接
+#   也可以使用 "system" 来使用系统 Redis（在 config.yaml 中配置的 system_redis）
+#
 # 模板变量说明：
 #   在动作配置中可以使用模板变量，如 {{ .ID }}, {{ .Table }}, {{ .Action }} 等
 #   - {{ .ID }}: 主键字段值（从 NewRow 或 OldRow 中提取）
@@ -21,6 +25,19 @@
 #   - {{ .OldRow }}: 旧行数据（UPDATE/DELETE 时可用）
 #   - {{ .FieldName }}: 任意字段名（首字母大写，如 {{ .Email }}, {{ .Status }}）
 # ============================================================================
+
+# Redis 连接配置（可选）
+# 规则中的 Redis 动作可以通过 redis_conn 字段指定使用哪个连接
+# 特殊名称 "system" 表示使用系统 Redis（在 config.yaml 中配置的 system_redis）
+redis_connections:
+  - name: "cache"                    # 连接名称
+    addr: "localhost:6379"          # Redis 服务器地址
+    password: ""                    # Redis 密码（如果未设置密码则留空）
+    db: 1                           # Redis 数据库编号
+  - name: "session"                 # 另一个 Redis 连接示例
+    addr: "localhost:6379"
+    password: ""
+    db: 2
 
 rules:
   # 示例 1: 用户缓存失效
@@ -34,9 +51,30 @@ rules:
       - type: "redis"                 # Redis 动作
         cmd: "DEL"                     # 删除命令
         key: "cache:user:{{ .ID }}"   # 使用模板变量 {{ .ID }} 动态生成 key
+        redis_conn: "cache"           # 指定使用名为 "cache" 的 Redis 连接
+                                      # 可选值：
+                                      #   - "cache": 使用规则中定义的 "cache" 连接
+                                      #   - "system": 使用系统 Redis（config.yaml 中的 system_redis）
+                                      #   - 不指定或 "default": 使用默认连接（优先 default，其次 system，最后第一个可用连接）
       - type: "log"                    # 日志动作
         level: "info"
         message: "用户缓存已失效: user_id={{ .ID }}"
+
+  # 示例 4: 使用系统 Redis 的规则
+  # 当订单创建时，在系统 Redis 中记录统计信息
+  - id: "order_statistics"
+    name: "订单统计"
+    table: "orders"
+    events: ["INSERT"]
+    filter: "true"
+    actions:
+      - type: "redis"
+        cmd: "INCR"
+        key: "stats:orders:total"
+        redis_conn: "system"          # 使用系统 Redis
+      - type: "log"
+        level: "info"
+        message: "订单统计已更新: order_id={{ .ID }}"
 
   # 示例 2: 订单状态变更通知
   # 当订单状态变更为 completed 时，发送 Webhook 通知

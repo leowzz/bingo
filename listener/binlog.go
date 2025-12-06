@@ -3,6 +3,7 @@ package listener
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"bingo/internal/logger"
@@ -20,10 +21,15 @@ type EventHandler interface {
 
 // BinlogListener Binlog 监听器
 type BinlogListener struct {
-	canal        *canal.Canal
-	handler      EventHandler
-	filterTables map[string]bool
-	posStore     PositionStore // 位置存储
+	canal             *canal.Canal
+	handler           EventHandler
+	filterTables      map[string]bool
+	posStore          PositionStore  // 位置存储
+	lastPos           mysql.Position // 最后处理的位置
+	lastPosMutex      sync.RWMutex   // 保护 lastPos 的互斥锁
+	saveInterval      time.Duration  // 位置保存间隔
+	saveOnTransaction bool           // 是否在事务提交时保存位置
+	stopPeriodicSave  chan struct{}  // 停止定期保存的信号
 }
 
 // NewBinlogListener 创建新的 Binlog 监听器
@@ -33,6 +39,11 @@ func NewBinlogListener(cfg *canal.Config, handler EventHandler, tables []string)
 
 // NewBinlogListenerWithPositionStore 创建带位置存储的 Binlog 监听器
 func NewBinlogListenerWithPositionStore(cfg *canal.Config, handler EventHandler, tables []string, posStore PositionStore) (*BinlogListener, error) {
+	return NewBinlogListenerWithPositionStoreAndConfig(cfg, handler, tables, posStore, 5*time.Second, true)
+}
+
+// NewBinlogListenerWithPositionStoreAndConfig 创建带位置存储和配置的 Binlog 监听器
+func NewBinlogListenerWithPositionStoreAndConfig(cfg *canal.Config, handler EventHandler, tables []string, posStore PositionStore, saveInterval time.Duration, saveOnTransaction bool) (*BinlogListener, error) {
 	c, err := canal.NewCanal(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("创建 Canal 实例失败: %w", err)
@@ -44,14 +55,22 @@ func NewBinlogListenerWithPositionStore(cfg *canal.Config, handler EventHandler,
 	}
 
 	listener := &BinlogListener{
-		canal:        c,
-		handler:      handler,
-		filterTables: filterTables,
-		posStore:     posStore,
+		canal:             c,
+		handler:           handler,
+		filterTables:      filterTables,
+		posStore:          posStore,
+		saveInterval:      saveInterval,
+		saveOnTransaction: saveOnTransaction,
+		stopPeriodicSave:  make(chan struct{}),
 	}
 
 	// 注册事件处理器
 	c.SetEventHandler(listener)
+
+	// 如果配置了位置存储，启动定期保存任务
+	if posStore != nil && saveInterval > 0 {
+		go listener.startPeriodicSave()
+	}
 
 	return listener, nil
 }
@@ -106,6 +125,28 @@ func (l *BinlogListener) StartFromPosition(file string, position uint32) error {
 
 // Close 关闭监听器
 func (l *BinlogListener) Close() {
+	// 停止定期保存任务
+	if l.stopPeriodicSave != nil {
+		close(l.stopPeriodicSave)
+	}
+
+	// 关闭前保存最后的位置
+	if l.posStore != nil {
+		l.lastPosMutex.RLock()
+		pos := l.lastPos
+		l.lastPosMutex.RUnlock()
+
+		if pos.Name != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := l.posStore.Save(ctx, pos); err != nil {
+				logger.Warnw("关闭时保存位置失败", "error", err, "file", pos.Name, "position", pos.Pos)
+			} else {
+				logger.Infow("关闭时已保存 Binlog 位置", "file", pos.Name, "position", pos.Pos)
+			}
+		}
+	}
+
 	if l.canal != nil {
 		l.canal.Close()
 	}
@@ -211,6 +252,24 @@ func (l *BinlogListener) handleUpdate(e *canal.RowsEvent, columns []schema.Table
 
 // OnRotate 实现 canal.EventHandler 接口
 func (l *BinlogListener) OnRotate(header *replication.EventHeader, rotateEvent *replication.RotateEvent) error {
+	// Binlog 文件切换时，保存位置
+	if l.posStore != nil {
+		pos := mysql.Position{
+			Name: string(rotateEvent.NextLogName),
+			Pos:  uint32(rotateEvent.Position),
+		}
+		ctx := context.Background()
+		if err := l.posStore.Save(ctx, pos); err != nil {
+			logger.Warnw("保存位置到存储失败（文件切换）", "error", err, "file", pos.Name, "position", pos.Pos)
+		} else {
+			logger.Infow("已保存 Binlog 位置（文件切换）", "file", pos.Name, "position", pos.Pos)
+		}
+
+		// 更新最后处理的位置
+		l.lastPosMutex.Lock()
+		l.lastPos = pos
+		l.lastPosMutex.Unlock()
+	}
 	return nil
 }
 
@@ -227,7 +286,20 @@ func (l *BinlogListener) OnDDL(header *replication.EventHeader, nextPos mysql.Po
 
 // OnXID 实现 canal.EventHandler 接口（事务提交事件）
 func (l *BinlogListener) OnXID(header *replication.EventHeader, nextPos mysql.Position) error {
-	// 事务提交事件，暂不处理
+	// 更新最后处理的位置
+	l.lastPosMutex.Lock()
+	l.lastPos = nextPos
+	l.lastPosMutex.Unlock()
+
+	// 如果启用了事务提交时保存，在事务提交时保存位置（这是最可靠的保存时机）
+	if l.posStore != nil && l.saveOnTransaction {
+		ctx := context.Background()
+		if err := l.posStore.Save(ctx, nextPos); err != nil {
+			logger.Warnw("保存位置到存储失败（事务提交）", "error", err, "file", nextPos.Name, "position", nextPos.Pos)
+		} else {
+			logger.Debugw("已保存 Binlog 位置（事务提交）", "file", nextPos.Name, "position", nextPos.Pos)
+		}
+	}
 	return nil
 }
 
@@ -239,16 +311,51 @@ func (l *BinlogListener) OnGTID(header *replication.EventHeader, gtidEvent mysql
 
 // OnPosSynced 实现 canal.EventHandler 接口（位置同步事件）
 func (l *BinlogListener) OnPosSynced(header *replication.EventHeader, pos mysql.Position, set mysql.GTIDSet, force bool) error {
-	// 如果配置了位置存储，保存位置
+	// 更新最后处理的位置
+	l.lastPosMutex.Lock()
+	l.lastPos = pos
+	l.lastPosMutex.Unlock()
+
+	// 如果 force 为 true，立即保存位置
+	// 否则位置会在事务提交时（OnXID）保存
 	if l.posStore != nil && force {
 		ctx := context.Background()
 		if err := l.posStore.Save(ctx, pos); err != nil {
-			logger.Warnw("保存位置到存储失败", "error", err, "file", pos.Name, "position", pos.Pos)
+			logger.Warnw("保存位置到存储失败（强制保存）", "error", err, "file", pos.Name, "position", pos.Pos)
 		} else {
-			logger.Debugw("已保存 Binlog 位置", "file", pos.Name, "position", pos.Pos)
+			logger.Debugw("已保存 Binlog 位置（强制保存）", "file", pos.Name, "position", pos.Pos)
 		}
 	}
 	return nil
+}
+
+// startPeriodicSave 启动定期保存位置的 goroutine
+func (l *BinlogListener) startPeriodicSave() {
+	ticker := time.NewTicker(l.saveInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			l.lastPosMutex.RLock()
+			pos := l.lastPos
+			l.lastPosMutex.RUnlock()
+
+			// 如果位置有效（文件名不为空），保存位置
+			if pos.Name != "" && l.posStore != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if err := l.posStore.Save(ctx, pos); err != nil {
+					logger.Warnw("定期保存位置失败", "error", err, "file", pos.Name, "position", pos.Pos)
+				} else {
+					logger.Debugw("定期保存 Binlog 位置", "file", pos.Name, "position", pos.Pos, "interval", l.saveInterval)
+				}
+				cancel()
+			}
+		case <-l.stopPeriodicSave:
+			logger.Debugw("停止定期保存位置")
+			return
+		}
+	}
 }
 
 // OnRowsQueryEvent 实现 canal.EventHandler 接口

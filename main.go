@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,9 +13,11 @@ import (
 	"bingo/engine"
 	"bingo/executor"
 	"bingo/internal/logger"
+	"bingo/internal/metrics"
 	"bingo/listener"
 
 	"github.com/go-mysql-org/go-mysql/canal"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
@@ -49,44 +52,73 @@ func NewApp(cfgPath string) (*App, error) {
 	}
 	defer logger.Sync()
 
-	// 加载规则
-	rules, err := engine.LoadRules(cfg.RulesFile)
+	// 加载规则和 Redis 连接配置
+	rulesConfig, err := engine.LoadRulesWithRedisConnections(cfg.RulesFile)
 	if err != nil {
 		return nil, err
 	}
 
 	// 创建匹配器
-	matcher := engine.NewMatcher(rules)
+	matcher := engine.NewMatcher(rulesConfig.Rules)
 
 	// 创建执行器
 	exec := executor.NewExecutor()
 
-	// 初始化 Redis 客户端（用于执行器和位置存储）
-	var redisClient *redis.Client
-	if cfg.Redis.Addr != "" {
-		redisClient = redis.NewClient(&redis.Options{
-			Addr:     cfg.Redis.Addr,
-			Password: cfg.Redis.Password,
-			DB:       cfg.Redis.DB,
+	// 初始化系统 Redis 客户端（用于位置存储）
+	var systemRedisClient *redis.Client
+	if cfg.SystemRedis.Addr != "" {
+		systemRedisClient = redis.NewClient(&redis.Options{
+			Addr:     cfg.SystemRedis.Addr,
+			Password: cfg.SystemRedis.Password,
+			DB:       cfg.SystemRedis.DB,
 		})
 
 		// 测试 Redis 连接
 		ctx := context.Background()
-		if err := redisClient.Ping(ctx).Err(); err != nil {
-			logger.Warnf("Redis 连接失败: %v", err)
-			redisClient = nil
+		if err := systemRedisClient.Ping(ctx).Err(); err != nil {
+			logger.Warnf("系统 Redis 连接失败: %v", err)
+			systemRedisClient = nil
 		} else {
-			logger.Info("Redis 连接成功")
+			logger.Info("系统 Redis 连接成功")
+		}
+	}
 
-			// 初始化 Redis 执行器
-			redisExec := &executor.RedisExecutor{}
-			if err := redisExec.Init(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB); err != nil {
-				logger.Warnf("Redis 执行器初始化失败: %v", err)
+	// 初始化 Redis 执行器
+	redisExec := executor.NewRedisExecutor()
+
+	// 添加系统 Redis 连接（如果配置了），规则可以通过 "system" 名称使用
+	if cfg.SystemRedis.Addr != "" && systemRedisClient != nil {
+		// 直接使用已创建的客户端，避免重复创建
+		redisExec.AddConnectionWithClient("system", systemRedisClient)
+		logger.Info("系统 Redis 连接已添加到执行器（规则可通过 'system' 名称使用）")
+	}
+
+	// 添加规则中配置的 Redis 连接
+	if len(rulesConfig.RedisConnections) > 0 {
+		for _, conn := range rulesConfig.RedisConnections {
+			// 检查是否与系统 Redis 冲突
+			if conn.Name == "system" {
+				logger.Warnf("规则 Redis 连接名称 'system' 与系统 Redis 冲突，将跳过")
+				continue
+			}
+			if err := redisExec.AddConnection(conn.Name, conn.Addr, conn.Password, conn.DB); err != nil {
+				logger.Warnf("添加 Redis 连接失败 [%s]: %v", conn.Name, err)
 			} else {
-				exec.Register(redisExec)
-				logger.Info("Redis 执行器已初始化")
+				logger.Infof("Redis 连接已添加: %s", conn.Name)
 			}
 		}
+	}
+
+	// 如果没有配置任何连接，但配置了系统 Redis，使用系统 Redis 作为默认连接
+	if !redisExec.HasConnections() && cfg.SystemRedis.Addr != "" && systemRedisClient != nil {
+		redisExec.AddConnectionWithClient("default", systemRedisClient)
+		logger.Info("使用系统 Redis 作为默认连接")
+	}
+
+	// 注册 Redis 执行器
+	if redisExec.HasConnections() {
+		exec.Register(redisExec)
+		logger.Info("Redis 执行器已注册")
 	}
 
 	// 创建 Binlog 监听器配置
@@ -104,15 +136,28 @@ func NewApp(cfgPath string) (*App, error) {
 		executor: exec,
 	}
 
-	// 创建位置存储（如果配置了 Redis 且启用了位置存储）
+	// 创建位置存储（如果配置了系统 Redis 且启用了位置存储）
 	var posStore listener.PositionStore
-	if cfg.Binlog.UseRedisStore && redisClient != nil {
-		posStore = listener.NewRedisPositionStore(redisClient, cfg.Binlog.RedisStoreKey)
+	if cfg.Binlog.UseRedisStore && systemRedisClient != nil {
+		posStore = listener.NewRedisPositionStore(systemRedisClient, cfg.Binlog.RedisStoreKey)
 		logger.Infof("已启用 Redis 位置存储，键名: %s", cfg.Binlog.RedisStoreKey)
 	}
 
 	// 创建监听器（暂时不指定表，监控所有表）
-	binlogListener, err := listener.NewBinlogListenerWithPositionStore(canalCfg, eventHandler, nil, posStore)
+	// 配置位置保存间隔和是否在事务提交时保存
+	saveInterval := time.Duration(cfg.Binlog.SaveInterval) * time.Second
+	if saveInterval == 0 {
+		saveInterval = 5 * time.Second // 默认 5 秒
+	}
+	saveOnTransaction := cfg.Binlog.SaveOnTransaction
+	binlogListener, err := listener.NewBinlogListenerWithPositionStoreAndConfig(
+		canalCfg,
+		eventHandler,
+		nil,
+		posStore,
+		saveInterval,
+		saveOnTransaction,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +176,16 @@ func (a *App) Start() error {
 	logger.Infof("MySQL: %s", a.config.MySQL.Addr())
 	logger.Infof("规则文件: %s", a.config.RulesFile)
 	logger.Infof("已加载 %d 条规则", len(a.matcher.GetRules()))
+
+	// 启动 Prometheus metrics 端点
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		metricsAddr := ":9090"
+		logger.Infof("Prometheus metrics 端点启动在 %s/metrics", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, nil); err != nil {
+			logger.Warnf("启动 metrics 端点失败: %v", err)
+		}
+	}()
 
 	// 设置信号处理，优雅关闭
 	sigChan := make(chan os.Signal, 1)
@@ -170,6 +225,11 @@ type EventHandler struct {
 
 // OnEvent 处理事件
 func (h *EventHandler) OnEvent(event *listener.Event) error {
+	startTime := time.Now()
+
+	// 记录事件
+	metrics.RecordEvent(event.Table, string(event.Action))
+
 	// Debug: 打印收到的事件信息
 	logger.Debugw("收到事件",
 		"table", event.Table,
@@ -220,6 +280,11 @@ func (h *EventHandler) OnEvent(event *listener.Event) error {
 	defer cancel()
 
 	for _, rule := range matchedRules {
+		ruleStartTime := time.Now()
+
+		// 记录规则匹配
+		metrics.RecordRuleMatched(rule.ID, event.Table, string(event.Action))
+
 		logger.Infow("执行规则",
 			"rule_id", rule.ID,
 			"rule_name", rule.Name,
@@ -234,11 +299,26 @@ func (h *EventHandler) OnEvent(event *listener.Event) error {
 				"table", event.Table,
 				"action", event.Action,
 			)
-			// 继续执行其他规则，不中断
+
+			// 记录失败的动作
+			for _, action := range rule.Actions {
+				metrics.RecordActionFailed(action.Type, rule.ID, "execution_error")
+			}
 		} else {
 			logger.Infow("规则执行成功", "rule_id", rule.ID)
+
+			// 记录成功的动作和处理耗时
+			duration := time.Since(ruleStartTime).Seconds()
+			for _, action := range rule.Actions {
+				metrics.RecordActionExecuted(action.Type, rule.ID)
+				metrics.RecordProcessingDuration(rule.ID, action.Type, duration)
+			}
 		}
 	}
+
+	// 记录总处理耗时
+	totalDuration := time.Since(startTime).Seconds()
+	metrics.RecordProcessingDuration("total", "event", totalDuration)
 
 	return nil
 }

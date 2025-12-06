@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"text/template"
@@ -18,8 +19,16 @@ func RenderTemplate(tmplStr string, event *listener.Event) (string, error) {
 	// 创建模板函数映射
 	funcMap := template.FuncMap{
 		"toJson": func(v interface{}) string {
-			// 简单的 JSON 序列化（实际项目中可以使用 encoding/json）
-			return fmt.Sprintf("%v", v)
+			// 使用 encoding/json 进行真正的 JSON 序列化
+			if v == nil {
+				return "null"
+			}
+			jsonBytes, err := json.Marshal(v)
+			if err != nil {
+				// 如果序列化失败，返回错误信息（但不会中断模板渲染）
+				return fmt.Sprintf(`{"error": "json_marshal_failed: %v"}`, err)
+			}
+			return string(jsonBytes)
 		},
 		"upper": strings.ToUpper,
 		"lower": strings.ToLower,

@@ -82,8 +82,9 @@ func InitLogger(level, format, output, file string, maxSize, maxBackups, maxAge 
 	// 创建核心
 	core := zapcore.NewCore(encoder, writeSyncer, zapLevel)
 
-	// 创建 logger
-	Logger = zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
+	// 创建 logger，跳过一层调用（因为我们的封装函数）
+	// 这样日志会显示实际调用者的位置，而不是封装函数的位置
+	Logger = zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1), zap.AddStacktrace(zapcore.ErrorLevel))
 	Sugar = Logger.Sugar()
 
 	// 重定向标准库的 log 输出到 zap（用于 canal 等库的日志）

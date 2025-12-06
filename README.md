@@ -23,7 +23,7 @@
 
 - Go 1.25 或更高版本
 - MySQL 5.7+ 或 MySQL 8.0+（需要开启 Binlog）
-- Redis（用于存储断点位点和执行动作）
+- Redis（用于存储断点位置和执行动作，支持多个 Redis 连接）
 
 ### 安装
 
@@ -150,7 +150,7 @@ server-id=1
 #### config.yaml
 应用主配置文件，包含：
 - MySQL 连接配置
-- Redis 配置
+- 系统 Redis 配置（用于存储 Binlog 位置等系统功能）
 - Binlog 位置配置
 - 性能参数配置
 - 日志配置
@@ -159,10 +159,16 @@ server-id=1
 
 #### rules.yaml
 规则配置文件，定义数据变更触发的动作：
+- Redis 连接配置（可选，支持多个连接）
 - 表过滤规则
 - 事件类型过滤（INSERT/UPDATE/DELETE）
 - 条件过滤（CEL 表达式）
 - 执行动作（Redis/Webhook/Log 等）
+
+**Redis 连接配置**：
+- 可以在 `rules.yaml` 中定义多个 Redis 连接
+- 规则中的 Redis 动作可以指定使用哪个连接
+- 也可以使用 `redis_conn: "system"` 使用系统 Redis
 
 详细配置说明请参考 `rules.yaml.template` 文件中的注释。
 
@@ -182,21 +188,58 @@ server-id=1
 
 ### 1. Redis 动作
 
+Redis 动作支持多个 Redis 连接配置，可以在规则中指定使用哪个连接。
+
+#### 配置 Redis 连接
+
+在 `rules.yaml` 中定义 Redis 连接：
+
+```yaml
+redis_connections:
+  - name: "cache"                    # 连接名称
+    addr: "localhost:6379"          # Redis 服务器地址
+    password: ""                     # Redis 密码
+    db: 1                            # Redis 数据库编号
+  - name: "session"                  # 另一个连接
+    addr: "localhost:6379"
+    password: ""
+    db: 2
+```
+
+#### 使用 Redis 动作
+
 ```yaml
 actions:
   - type: "redis"
-    cmd: "DEL"           # 支持: DEL, SET, EXPIRE, INCR, DECR
+    cmd: "DEL"                       # 支持: DEL, SET, EXPIRE, INCR, DECR
     key: "cache:user:{{ .ID }}"
-    value: ""            # SET 命令时使用
-    ttl: 3600           # EXPIRE 时使用（秒）
+    redis_conn: "cache"              # 指定使用哪个连接（可选）
+                                     # - 不指定或 "default": 使用默认连接
+                                     # - "system": 使用系统 Redis（config.yaml 中的 system_redis）
+                                     # - 其他: 使用 rules.yaml 中定义的连接名称
+    value: ""                        # SET 命令时使用
+    ttl: 3600                        # SET/EXPIRE 时使用（秒）
+    keys: []                         # DEL 批量删除时使用（可选）
 ```
 
 **支持的命令**：
-- `DEL`: 删除键
-- `SET`: 设置键值
+- `DEL`: 删除键（支持单个 key 或批量 keys）
+- `SET`: 设置键值（支持 TTL，使用 SetEx）
 - `EXPIRE`: 设置过期时间
 - `INCR`: 递增
 - `DECR`: 递减
+
+**连接选择优先级**：
+1. 如果指定了 `redis_conn`，使用指定的连接
+2. 如果未指定，按以下顺序选择：
+   - `default` 连接（如果存在）
+   - `system` 连接（如果存在）
+   - 第一个可用的连接
+
+**系统 Redis**：
+- 系统 Redis 在 `config.yaml` 中配置为 `system_redis`
+- 主要用于存储 Binlog 位置等系统功能
+- 规则可以通过 `redis_conn: "system"` 使用系统 Redis
 
 ### 2. Webhook 动作
 
@@ -454,8 +497,8 @@ FLUSH PRIVILEGES;
 **症状**：重启后从错误位置开始读取
 
 **解决方案**：
-- 确保 Redis 正常运行（用于存储断点）
-- 检查 Redis 中的 `bingo:binlog:position` 键
+- 确保系统 Redis 正常运行（用于存储断点）
+- 检查系统 Redis 中的 `bingo:binlog:position` 键
 - 手动设置起始位置：
 
 ```yaml
@@ -463,6 +506,16 @@ binlog:
   file: "mysql-bin.000001"
   position: 12345
 ```
+
+#### 2.1. Redis 连接不存在
+
+**症状**：规则执行时提示 "Redis 连接不存在: xxx"
+
+**解决方案**：
+- 检查 `rules.yaml` 中的 `redis_connections` 是否正确定义
+- 检查规则中的 `redis_conn` 字段是否拼写正确
+- 如果使用 `system`，确保 `config.yaml` 中配置了 `system_redis`
+- 查看日志中的可用连接列表
 
 #### 3. 规则不匹配
 
@@ -533,6 +586,11 @@ binlog:
 - [go-mysql 文档](https://github.com/go-mysql-org/go-mysql)
 - [CEL 表达式语言](https://github.com/google/cel-spec)
 - [MySQL Binlog 格式](https://dev.mysql.com/doc/internals/en/binary-log.html)
+
+## 📚 更多文档
+
+- [Redis 连接配置说明](REDIS_CONNECTIONS.md) - 详细的 Redis 连接配置和使用指南
+- [测试文档](TESTING.md) - 单元测试说明和覆盖率报告
 
 ## 📧 联系方式
 

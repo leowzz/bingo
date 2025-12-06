@@ -16,9 +16,10 @@ mysql:
   password: "root"        # MySQL 密码
   database: "test_db"     # 数据库名（可选，用于连接测试）
 
-# Redis 配置
-# 用于存储 Binlog 位置（断点续传）和执行 Redis 动作
-redis:
+# 系统 Redis 配置
+# 用于存储 Binlog 位置（断点续传）等系统功能
+# 规则也可以通过 redis_conn: "system" 使用此连接
+system_redis:
   addr: "localhost:6379"  # Redis 服务器地址
   password: ""            # Redis 密码（如果未设置密码则留空）
   db: 0                   # Redis 数据库编号
@@ -30,6 +31,8 @@ binlog:
   position: 0             # Binlog 位置，仅在指定 file 时生效
   use_redis_store: true   # 是否使用 Redis 存储位置（断点续传）
   redis_store_key: "bingo:binlog:position"  # Redis 存储键名
+  save_interval: 5         # 位置保存间隔（秒），定期保存到 Redis，默认 5 秒
+  save_on_transaction: true # 是否在事务提交时立即保存位置，默认 true（推荐）
 
 # 规则文件路径
 # 指定规则配置文件的路径，支持相对路径和绝对路径
