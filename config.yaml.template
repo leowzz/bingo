@@ -30,7 +30,7 @@ binlog:
   file: ""                # Binlog 文件名（如 "mysql-bin.000001"），留空则从当前位置或 Redis 读取
   position: 0             # Binlog 位置，仅在指定 file 时生效
   use_redis_store: true   # 是否使用 Redis 存储位置（断点续传）
-  redis_store_key: "bingo:binlog:position"  # Redis 存储键名
+  redis_store_key: "bingo:binlog:position:{{ .ConnCfgHash }}"  # Redis 存储键名，支持模板语法 {{ .ConnCfgHash }}，会自动替换为 MySQL 连接配置的 hash 值
   save_interval: 5         # 位置保存间隔（秒），定期保存到 Redis，默认 5 秒
   save_on_transaction: true # 是否在事务提交时立即保存位置，默认 true（推荐）
 

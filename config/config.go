@@ -1,8 +1,13 @@
 package config
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
+	"text/template"
 
 	"gopkg.in/yaml.v3"
 )
@@ -29,6 +34,23 @@ type MySQLConfig struct {
 // Addr 返回 MySQL 地址
 func (m MySQLConfig) Addr() string {
 	return fmt.Sprintf("%s:%d", m.Host, m.Port)
+}
+
+// ConnCfgHash 计算 MySQL 连接配置的 hash 值
+//
+// 使用 SHA256 计算连接配置的 hash，用于区分不同的 MySQL 连接。
+// hash 基于 host、port、user、password 和 database 计算。
+//
+// :return: 16 进制字符串形式的 hash 值（前 12 个字符）
+func (m MySQLConfig) ConnCfgHash() string {
+	// 构建用于 hash 的字符串
+	hashInput := fmt.Sprintf("%s:%d:%s:%s:%s", m.Host, m.Port, m.User, m.Password, m.Database)
+	
+	// 计算 SHA256 hash
+	hash := sha256.Sum256([]byte(hashInput))
+	
+	// 返回前 12 个字符（24 个十六进制字符的一半，足够区分）
+	return hex.EncodeToString(hash[:])[:12]
 }
 
 // RedisConfig Redis 配置
@@ -92,6 +114,11 @@ func LoadConfig(path string) (*Config, error) {
 	// 设置默认值
 	cfg.setDefaults()
 
+	// 解析 redis_store_key 中的模板
+	if err := cfg.resolveRedisStoreKeyTemplate(); err != nil {
+		return nil, fmt.Errorf("解析 redis_store_key 模板失败: %w", err)
+	}
+
 	return &cfg, nil
 }
 
@@ -142,4 +169,44 @@ func (c *Config) setDefaults() {
 		// 如果未设置，默认为 true
 		c.Binlog.SaveOnTransaction = true
 	}
+}
+
+// resolveRedisStoreKeyTemplate 解析 redis_store_key 中的模板
+//
+// 支持 {{ .ConnCfgHash }} 模板变量，会自动替换为 MySQL 连接配置的 hash 值。
+func (c *Config) resolveRedisStoreKeyTemplate() error {
+	if c.Binlog.RedisStoreKey == "" {
+		return nil
+	}
+
+	// 检查是否包含模板语法
+	if !containsTemplate(c.Binlog.RedisStoreKey) {
+		return nil
+	}
+
+	// 准备模板数据
+	tmplData := struct {
+		ConnCfgHash string
+	}{
+		ConnCfgHash: c.MySQL.ConnCfgHash(),
+	}
+
+	// 解析并执行模板
+	tmpl, err := template.New("redis_store_key").Parse(c.Binlog.RedisStoreKey)
+	if err != nil {
+		return fmt.Errorf("解析模板失败: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, tmplData); err != nil {
+		return fmt.Errorf("执行模板失败: %w", err)
+	}
+
+	c.Binlog.RedisStoreKey = buf.String()
+	return nil
+}
+
+// containsTemplate 检查字符串是否包含模板语法
+func containsTemplate(s string) bool {
+	return strings.Contains(s, "{{") && strings.Contains(s, "}}")
 }
