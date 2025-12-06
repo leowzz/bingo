@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,10 +26,11 @@ import (
 
 // App 应用主结构
 type App struct {
-	config   *config.Config
-	matcher  *engine.Matcher
-	executor *executor.Executor
-	listener *listener.BinlogListener
+	config       *config.Config
+	matcher      *engine.Matcher
+	executor     *executor.Executor
+	listener     *listener.BinlogListener
+	eventHandler *EventHandler
 }
 
 // NewApp 创建新的应用实例
@@ -131,11 +133,13 @@ func NewApp(cfgPath string) (*App, error) {
 	canalCfg.Dump.Tables = nil
 	canalCfg.Dump.ExecutionPath = ""
 
-	// 创建事件处理器
-	eventHandler := &EventHandler{
-		matcher:  matcher,
-		executor: exec,
-	}
+	// 创建事件处理器（异步处理）
+	eventHandler := NewEventHandler(
+		matcher,
+		exec,
+		cfg.Performance.QueueSize,
+		cfg.Performance.WorkerPoolSize,
+	)
 
 	// 创建位置存储（如果配置了系统 Redis 且启用了位置存储）
 	var posStore listener.PositionStore
@@ -163,12 +167,18 @@ func NewApp(cfgPath string) (*App, error) {
 		return nil, err
 	}
 
-	return &App{
-		config:   cfg,
-		matcher:  matcher,
-		executor: exec,
-		listener: binlogListener,
-	}, nil
+	app := &App{
+		config:       cfg,
+		matcher:      matcher,
+		executor:     exec,
+		listener:     binlogListener,
+		eventHandler: eventHandler,
+	}
+
+	// 启动事件处理器工作池
+	eventHandler.Start()
+
+	return app, nil
 }
 
 // Start 启动应用
@@ -211,6 +221,12 @@ func (a *App) Start() error {
 
 // Stop 停止应用
 func (a *App) Stop() {
+	// 先停止事件处理器，等待工作池完成当前任务
+	if a.eventHandler != nil {
+		a.eventHandler.Stop()
+	}
+
+	// 然后关闭 binlog 监听器
 	if a.listener != nil {
 		a.listener.Close()
 	}
@@ -220,16 +236,112 @@ func (a *App) Stop() {
 
 // EventHandler 事件处理器
 type EventHandler struct {
-	matcher  *engine.Matcher
-	executor *executor.Executor
+	matcher    *engine.Matcher
+	executor   *executor.Executor
+	eventQueue chan *listener.Event
+	workers    int
+	wg         sync.WaitGroup
+	stopChan   chan struct{}
 }
 
-// OnEvent 处理事件
-func (h *EventHandler) OnEvent(event *listener.Event) error {
-	startTime := time.Now()
+// NewEventHandler 创建新的事件处理器
+func NewEventHandler(matcher *engine.Matcher, executor *executor.Executor, queueSize, workerPoolSize int) *EventHandler {
+	return &EventHandler{
+		matcher:    matcher,
+		executor:   executor,
+		eventQueue: make(chan *listener.Event, queueSize),
+		workers:    workerPoolSize,
+		stopChan:   make(chan struct{}),
+	}
+}
 
-	// 记录事件
+// Start 启动工作池
+func (h *EventHandler) Start() {
+	logger.Infof("启动事件处理器工作池，工作线程数: %d, 队列大小: %d", h.workers, cap(h.eventQueue))
+	for i := 0; i < h.workers; i++ {
+		h.wg.Add(1)
+		go h.worker(i)
+	}
+}
+
+// Stop 停止工作池（优雅关闭，等待所有事件处理完成）
+func (h *EventHandler) Stop() {
+	logger.Info("正在停止事件处理器工作池...")
+
+	// 先关闭 stopChan，通知 worker 准备停止（不再接受新事件入队）
+	// 同时 OnEvent 也会检测到 stopChan 关闭，会同步处理事件而不是入队
+	close(h.stopChan)
+
+	// 等待所有 worker 处理完队列中的剩余事件
+	logger.Info("等待工作线程处理完队列中的事件...")
+	h.wg.Wait()
+
+	// 所有 worker 都已退出，队列中的事件都已处理完
+	// 现在可以安全关闭队列（虽然 worker 已退出，但为了清理资源仍然关闭）
+	close(h.eventQueue)
+
+	logger.Info("事件处理器工作池已停止")
+}
+
+// OnEvent 处理事件（异步入队）
+func (h *EventHandler) OnEvent(event *listener.Event) error {
+	// 记录事件（用于统计）
 	metrics.RecordEvent(event.Table, string(event.Action))
+
+	// 将事件加入队列（阻塞等待，确保不丢失事件）
+	select {
+	case h.eventQueue <- event:
+		return nil
+	case <-h.stopChan:
+		// 正在关闭，但仍尝试处理当前事件
+		// 由于正在关闭，可以选择同步处理或者记录日志
+		logger.Warnw("事件处理器正在关闭，但会处理当前事件", "table", event.Table, "action", event.Action)
+		// 同步处理当前事件，确保不丢失
+		h.processEvent(event)
+		return nil
+	}
+}
+
+// worker 工作线程，处理事件队列中的事件
+func (h *EventHandler) worker(id int) {
+	defer h.wg.Done()
+	logger.Debugw("事件处理工作线程启动", "worker_id", id)
+
+	for {
+		select {
+		case event, ok := <-h.eventQueue:
+			if !ok {
+				// 队列已关闭，退出
+				logger.Debugw("事件处理工作线程退出（队列已关闭）", "worker_id", id)
+				return
+			}
+			h.processEvent(event)
+		case <-h.stopChan:
+			// 收到停止信号，处理完队列中的所有剩余事件后退出
+			logger.Debugw("事件处理工作线程收到停止信号，处理剩余事件", "worker_id", id)
+			// 继续处理队列中的所有剩余事件，确保不丢失
+			for {
+				select {
+				case event, ok := <-h.eventQueue:
+					if !ok {
+						// 队列已关闭，退出
+						logger.Debugw("事件处理工作线程退出（队列已关闭）", "worker_id", id)
+						return
+					}
+					h.processEvent(event)
+				default:
+					// 队列已空，退出
+					logger.Debugw("事件处理工作线程退出（队列已空）", "worker_id", id)
+					return
+				}
+			}
+		}
+	}
+}
+
+// processEvent 处理单个事件（原来的同步处理逻辑）
+func (h *EventHandler) processEvent(event *listener.Event) {
+	startTime := time.Now()
 
 	// Debug: 打印收到的事件信息
 	logger.Debugw("收到事件",
@@ -254,13 +366,13 @@ func (h *EventHandler) OnEvent(event *listener.Event) error {
 	matchedRules, err := h.matcher.Match(event)
 	if err != nil {
 		logger.Errorw("规则匹配失败", "error", err, "table", event.Table, "action", event.Action)
-		return err
+		return
 	}
 
 	if len(matchedRules) == 0 {
 		// 没有匹配的规则，直接返回
 		logger.Debugw("未匹配到规则", "table", event.Table, "action", event.Action)
-		return nil
+		return
 	}
 
 	logger.Infow("规则匹配成功",
@@ -320,8 +432,6 @@ func (h *EventHandler) OnEvent(event *listener.Event) error {
 	// 记录总处理耗时
 	totalDuration := time.Since(startTime).Seconds()
 	metrics.RecordProcessingDuration("total", "event", totalDuration)
-
-	return nil
 }
 
 func main() {
