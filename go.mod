@@ -3,15 +3,15 @@ module bingo
 go 1.25
 
 require (
-	github.com/IBM/sarama v1.46.3           // Kafka 客户端库, 用于与 Apache Kafka 进行消息队列交互
+	github.com/IBM/sarama v1.46.3 // Kafka 客户端库, 用于与 Apache Kafka 进行消息队列交互
 	github.com/go-mysql-org/go-mysql v1.13.0 // MySQL 协议解析与 binlog 读取库, 用于监听和解析 MySQL 事件
-	github.com/google/cel-go v0.26.1         // Google CEL 表达式引擎, 用于规则过滤的表达式求值
+	github.com/google/cel-go v0.26.1 // Google CEL 表达式引擎, 用于规则过滤的表达式求值
 	github.com/prometheus/client_golang v1.23.2 // Prometheus 客户端, 用于应用指标采集和监控上报
-	github.com/redis/go-redis/v9 v9.17.2     // Redis 客户端, 用于连接和操作 Redis 数据库
-	go.uber.org/zap v1.27.1                  // Uber 出品的高性能结构化日志库
-	google.golang.org/grpc v1.77.0           // gRPC 框架, 用于远程过程调用
-	gopkg.in/natefinch/lumberjack.v2 v2.2.1  // 自动切割和归档日志的日志滚动库
-	gopkg.in/yaml.v3 v3.0.1                  // YAML 文件解析库, 用于配置文件和规则文件读取
+	github.com/redis/go-redis/v9 v9.17.2 // Redis 客户端, 用于连接和操作 Redis 数据库
+	go.uber.org/zap v1.27.1 // Uber 出品的高性能结构化日志库
+	google.golang.org/grpc v1.77.0 // gRPC 框架, 用于远程过程调用
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // 自动切割和归档日志的日志滚动库
+	gopkg.in/yaml.v3 v3.0.1 // YAML 文件解析库, 用于配置文件和规则文件读取
 )
 
 require (

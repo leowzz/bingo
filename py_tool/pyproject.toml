@@ -1,0 +1,13 @@
+[project]
+name = "py-tool"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "loguru>=0.7.3",
+    "pydantic>=2.12.5",
+    "pymysql>=1.1.2",
+    "pyyaml>=6.0.3",
+    "redis>=7.1.0",
+]

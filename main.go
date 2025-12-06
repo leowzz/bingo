@@ -345,7 +345,7 @@ func (h *EventHandler) processEvent(event *listener.Event) {
 	startTime := time.Now()
 
 	// Debug: 打印收到的事件信息
-	logger.Debugw("收到事件",
+	logger.Infow("收到事件",
 		"table", event.Table,
 		"action", event.Action,
 		"schema", event.Schema,

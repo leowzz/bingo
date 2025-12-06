@@ -147,3 +147,7 @@ check: fmt vet test
 ci: deps tidy fmt vet test-coverage build
 	@echo "CI 检查完成"
 
+
+run_py_tool:
+	@echo "运行 py_tool..."
+	cd py_tool && uv run db_tool.py
