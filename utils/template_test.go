@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"strings"
 	"testing"
 
 	"bingo/listener"
@@ -192,6 +193,77 @@ func TestRenderTemplateWithFunctions(t *testing.T) {
 			}
 			if result != tt.expected {
 				t.Errorf("RenderTemplate() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestRenderTemplateWithDeleteAction(t *testing.T) {
+	// 模拟 DELETE 操作：NewRow 为空，OldRow 有数据
+	event := &listener.Event{
+		Table:  "test.users_001",
+		Action: listener.ActionDelete,
+		Schema: "test",
+		NewRow: map[string]interface{}{}, // DELETE 操作时 NewRow 为空
+		OldRow: map[string]interface{}{
+			"id":       6,
+			"email":    "user6@example.com",
+			"username": "user6",
+			"phone":    "13800138006",
+			"age":      25,
+		},
+	}
+
+	tests := []struct {
+		name     string
+		tmplStr  string
+		expected string
+	}{
+		{
+			name:     "使用 .ID (全大写)",
+			tmplStr:  "id={{ .ID }}",
+			expected: "id=6",
+		},
+		{
+			name:     "使用 .Id (首字母大写)",
+			tmplStr:  "id={{ .Id }}",
+			expected: "id=6",
+		},
+		{
+			name:     "使用 .Email",
+			tmplStr:  "email={{ .Email }}",
+			expected: "email=user6@example.com",
+		},
+		{
+			name:     "同时使用 .ID 和 .Email",
+			tmplStr:  "id={{ .ID }} email={{ .Email }}",
+			expected: "id=6 email=user6@example.com",
+		},
+		{
+			name:     "完整日志消息",
+			tmplStr:  "用户缓存已失效: id={{ .ID }} email={{ .Email }}. NewRow: {{ .NewRow }}. OldRow: {{ .OldRow }}",
+			expected: "用户缓存已失效: id=6 email=user6@example.com. NewRow: map[]. OldRow: map[age:25 email:user6@example.com id:6 phone:13800138006 username:user6]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := RenderTemplate(tt.tmplStr, event)
+			if err != nil {
+				t.Fatalf("RenderTemplate() error = %v", err)
+			}
+			// 对于包含 map 输出的测试，只检查关键部分
+			if tt.name == "完整日志消息" {
+				if !strings.Contains(result, "id=6") {
+					t.Errorf("RenderTemplate() 应包含 'id=6', 实际: %v", result)
+				}
+				if !strings.Contains(result, "email=user6@example.com") {
+					t.Errorf("RenderTemplate() 应包含 'email=user6@example.com', 实际: %v", result)
+				}
+			} else {
+				if result != tt.expected {
+					t.Errorf("RenderTemplate() = %v, want %v", result, tt.expected)
+				}
 			}
 		})
 	}

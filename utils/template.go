@@ -48,17 +48,14 @@ func RenderTemplate(tmplStr string, event *listener.Event) (string, error) {
 	// 从 NewRow 或 OldRow 中提取字段
 	if event.NewRow != nil {
 		for k, v := range event.NewRow {
-			// 转换为大写开头的字段名（Go 模板约定）
-			fieldName := strings.ToUpper(k[:1]) + k[1:]
-			data[fieldName] = v
+			addFieldVariants(data, k, v)
 		}
 	}
 	if event.OldRow != nil {
 		for k, v := range event.OldRow {
-			fieldName := strings.ToUpper(k[:1]) + k[1:]
 			// 如果 NewRow 中没有，才使用 OldRow 的值
-			if _, exists := data[fieldName]; !exists {
-				data[fieldName] = v
+			if !hasFieldVariants(data, k) {
+				addFieldVariants(data, k, v)
 			}
 		}
 	}
@@ -70,4 +67,56 @@ func RenderTemplate(tmplStr string, event *listener.Event) (string, error) {
 	}
 
 	return buf.String(), nil
+}
+
+// addFieldVariants 添加字段的多种大小写变体到 data map
+//
+// 对于字段名 "id"，会添加：
+//   - "Id" (首字母大写，Go 约定)
+//   - "ID" (全大写，常见缩写格式)
+//
+// 对于其他字段如 "email"，会添加：
+//   - "Email" (首字母大写)
+func addFieldVariants(data map[string]interface{}, fieldName string, value interface{}) {
+	if fieldName == "" {
+		return
+	}
+
+	// 首字母大写格式（Go 约定）：id -> Id, email -> Email
+	capitalized := strings.ToUpper(fieldName[:1]) + fieldName[1:]
+	data[capitalized] = value
+
+	// 对于短字段名（1-3个字符），同时添加全大写版本
+	// 这样可以支持 .ID, .URL, .API 等常见缩写
+	if len(fieldName) <= 3 {
+		upper := strings.ToUpper(fieldName)
+		// 如果全大写版本与首字母大写版本不同，也添加
+		if upper != capitalized {
+			data[upper] = value
+		}
+	}
+}
+
+// hasFieldVariants 检查 data map 中是否已存在该字段的任意变体
+func hasFieldVariants(data map[string]interface{}, fieldName string) bool {
+	if fieldName == "" {
+		return false
+	}
+
+	capitalized := strings.ToUpper(fieldName[:1]) + fieldName[1:]
+	if _, exists := data[capitalized]; exists {
+		return true
+	}
+
+	// 检查全大写版本（如果是短字段）
+	if len(fieldName) <= 3 {
+		upper := strings.ToUpper(fieldName)
+		if upper != capitalized {
+			if _, exists := data[upper]; exists {
+				return true
+			}
+		}
+	}
+
+	return false
 }
