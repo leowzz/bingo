@@ -75,26 +75,23 @@ server-id=1
 └────────┬────────┘
          │ (Binlog Stream)
          ▼
-┌─────────────────────────┐
-│  1. Listener            │
-│  (监听器)                │
-│  - 伪装 MySQL Slave      │
-│  - 清洗标准化数据        │
-└────────┬────────────────┘
-         │ (标准化 Event: {Table, Action, OldRow, NewRow})
-         ▼
-┌─────────────────────────┐
-│  2. Rule Engine         │
-│  (规则引擎)              │
-│  - 加载 rules.yaml      │
-│  - 条件匹配             │
-│  - CEL 表达式评估       │
-└────────┬────────────────┘
-         │ (匹配的规则)
-         ▼
+┌──────────────────────────────┐
+│  1. Listener                 │
+│  - Acts as MySQL Slave       │
+│  - Cleans & normalizes data  │
+└────────────┬─────────────────┘
+             │ (Normalized Event: {Table, Action, OldRow, NewRow})
+             ▼
+┌──────────────────────────────┐
+│  2. Rule Engine              │
+│  - Loads rules.yaml          │
+│  - Condition matching        │
+│  - CEL expression evaluation │
+└────────────┬─────────────────┘
+             │ (Matched rules)
+             ▼
 ┌─────────────────────────┐
 │  3. Action Executor     │
-│  (执行器)                │
 │  - Redis Adapter        │
 │  - Webhook Adapter      │
 │  - gRPC Adapter         │
@@ -132,154 +129,54 @@ server-id=1
 
 ## ⚙️ 配置说明
 
+### 快速开始
+
+1. **复制配置文件模板**：
+   ```bash
+   cp config.yaml.template config.yaml
+   cp rules.yaml.template rules.yaml
+   ```
+
+2. **编辑配置文件**：
+   - 修改 `config.yaml` 中的 MySQL、Redis 等连接信息
+   - 根据业务需求在 `rules.yaml` 中添加规则
+
+3. **详细配置说明**：
+   - 配置文件字段说明请查看 `config.yaml.template` 中的注释
+   - 规则配置说明请查看 `rules.yaml.template` 中的注释
+
 ### 配置文件结构
 
-创建 `config.yaml` 文件：
+#### config.yaml
+应用主配置文件，包含：
+- MySQL 连接配置
+- Redis 配置
+- Binlog 位置配置
+- 性能参数配置
+- 日志配置
 
-```yaml
-# MySQL 连接配置
-mysql:
-  host: "192.168.177.100"
-  port: 3306
-  user: "root"
-  password: "your_password"
-  database: "test"
+详细字段说明请参考 `config.yaml.template` 文件中的注释。
 
-# Redis 配置
-redis:
-  addr: "localhost:6379"
-  password: ""
-  db: 0
+#### rules.yaml
+规则配置文件，定义数据变更触发的动作：
+- 表过滤规则
+- 事件类型过滤（INSERT/UPDATE/DELETE）
+- 条件过滤（CEL 表达式）
+- 执行动作（Redis/Webhook/Log 等）
 
-# Binlog 位置（可选，用于断点续传）
-binlog:
-  file: ""  # 留空则从当前位置开始
-  position: 0
-  use_redis_store: true  # 是否使用 Redis 存储位置（断点续传）
-  redis_store_key: "bingo:binlog:position"  # Redis 存储键名
+详细配置说明请参考 `rules.yaml.template` 文件中的注释。
 
-# 规则文件路径
-rules_file: "rules.yaml"
+### 规则配置要点
 
-# 性能配置
-performance:
-  # 防抖窗口（毫秒）
-  debounce_window: 100
-  # 批量处理大小
-  batch_size: 100
-  # 并发处理数
-  concurrency: 10
-```
-
-### 规则文件 (rules.yaml)
-
-```yaml
-rules:
-  # 示例 1: 用户缓存失效
-  - id: "user_cache_invalidate"
-    name: "用户缓存失效"
-    table: "users"
-    events: ["UPDATE", "DELETE"]
-    # CEL 表达式过滤条件
-    filter: "NewRow['status'] != OldRow['status'] || Action == 'DELETE'"
-    actions:
-      - type: "redis"
-        cmd: "DEL"
-        key: "cache:user:{{ .ID }}"
-    
-  # 示例 2: 订单状态变更通知
-  - id: "order_status_notify"
-    name: "订单状态变更通知"
-    table: "orders"
-    events: ["UPDATE"]
-    filter: "NewRow['status'] == 'completed' && OldRow['status'] != 'completed'"
-    actions:
-      - type: "webhook"
-        url: "https://api.example.com/order/completed"
-        method: "POST"
-        headers:
-          Authorization: "Bearer {{ .Token }}"
-        body: |
-          {
-            "order_id": "{{ .ID }}",
-            "user_id": "{{ .UserID }}",
-            "status": "{{ .Status }}"
-          }
-    
-  # 示例 3: 用户注册事件
-  - id: "user_registered"
-    name: "用户注册事件"
-    table: "users"
-    events: ["INSERT"]
-    filter: "true"  # 所有插入都触发
-    actions:
-      - type: "kafka"
-        topic: "user.events"
-        key: "{{ .ID }}"
-        value: |
-          {
-            "event": "user.registered",
-            "user_id": "{{ .ID }}",
-            "email": "{{ .Email }}",
-            "timestamp": "{{ .Timestamp }}"
-          }
-    
-  # 示例 4: 批量操作（防抖聚合）
-  - id: "batch_cache_clear"
-    name: "批量缓存清理"
-    table: "products"
-    events: ["UPDATE", "DELETE"]
-    filter: "true"
-    # 启用批量处理
-    batch:
-      enabled: true
-      window: 200  # 200ms 窗口
-    actions:
-      - type: "redis"
-        cmd: "DEL"
-        # 批量操作时，key 会从多个事件中聚合
-        keys: ["cache:product:{{ .ID }}"]
-```
-
-### 规则字段说明
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | string | 是 | 规则唯一标识 |
-| `name` | string | 否 | 规则名称（用于日志） |
-| `table` | string | 是 | 监控的表名（格式：`database.table` 或 `table`） |
-| `events` | []string | 是 | 监听的事件类型：`INSERT`、`UPDATE`、`DELETE` |
-| `filter` | string | 否 | CEL 表达式，用于条件过滤 |
-| `actions` | []Action | 是 | 匹配后执行的动作列表 |
-| `batch` | BatchConfig | 否 | 批量处理配置 |
-
-### CEL 表达式
-
-规则引擎支持使用 CEL (Common Expression Language) 进行条件过滤。
-
-#### 可用变量
-
-- `Action`: 事件类型（"INSERT"、"UPDATE"、"DELETE"）
-- `Table`: 表名
-- `OldRow`: 更新前的行数据（UPDATE/DELETE 时可用）
-- `NewRow`: 更新后的行数据（INSERT/UPDATE 时可用）
-- `Timestamp`: 事件时间戳
-
-#### 示例
-
-```yaml
-# 只处理状态变更
-filter: "NewRow['status'] != OldRow['status']"
-
-# 只处理特定用户
-filter: "NewRow['user_id'] == 1001"
-
-# 组合条件
-filter: "NewRow['status'] == 'active' && NewRow['age'] >= 18"
-
-# 检查字段是否存在
-filter: "'email' in NewRow && NewRow['email'] != ''"
-```
+- **表名格式**：支持 `database.table` 或 `table` 两种格式
+- **事件类型**：`INSERT`、`UPDATE`、`DELETE`
+- **过滤条件**：使用 CEL 表达式，留空或 `"true"` 表示匹配所有
+- **模板变量**：在动作配置中使用 `{{ .FieldName }}` 访问事件数据
+  - `{{ .ID }}` - 主键字段值
+  - `{{ .Table }}` - 表名
+  - `{{ .Action }}` - 操作类型
+  - `{{ .NewRow }}` / `{{ .OldRow }}` - 行数据
+  - `{{ .FieldName }}` - 任意字段（首字母大写）
 
 ## 🎯 动作类型详解
 

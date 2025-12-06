@@ -1,45 +1,57 @@
+# ============================================================================
+# BinGo 配置文件模板
+# ============================================================================
+# 使用说明：
+# 1. 复制此文件为 config.yaml: cp config.yaml.template config.yaml
+# 2. 根据实际情况修改配置项
+# 3. 确保 MySQL 用户具有 REPLICATION SLAVE 权限
+# ============================================================================
+
 # MySQL 连接配置
+# 用于连接 MySQL 并监听 Binlog 变更
 mysql:
-  host: "127.0.0.1"
-  port: 3306
-  user: "root"
-  password: "root"
-  database: "test_db"
+  host: "127.0.0.1"      # MySQL 服务器地址
+  port: 3306              # MySQL 端口
+  user: "root"            # MySQL 用户名（需要 REPLICATION SLAVE 权限）
+  password: "root"        # MySQL 密码
+  database: "test_db"     # 数据库名（可选，用于连接测试）
 
 # Redis 配置
+# 用于存储 Binlog 位置（断点续传）和执行 Redis 动作
 redis:
-  addr: "localhost:6379"
-  password: ""
-  db: 0
+  addr: "localhost:6379"  # Redis 服务器地址
+  password: ""            # Redis 密码（如果未设置密码则留空）
+  db: 0                   # Redis 数据库编号
 
-# Binlog 位置（可选，用于断点续传）
+# Binlog 位置配置（可选，用于断点续传）
+# 如果配置了 Redis 且 use_redis_store 为 true，会优先从 Redis 读取位置
 binlog:
-  file: ""  # 留空则从当前位置开始
-  position: 0
+  file: ""                # Binlog 文件名（如 "mysql-bin.000001"），留空则从当前位置或 Redis 读取
+  position: 0             # Binlog 位置，仅在指定 file 时生效
+  use_redis_store: true   # 是否使用 Redis 存储位置（断点续传）
+  redis_store_key: "bingo:binlog:position"  # Redis 存储键名
 
 # 规则文件路径
+# 指定规则配置文件的路径，支持相对路径和绝对路径
 rules_file: "rules.yaml"
 
 # 性能配置
+# 根据实际负载调整这些参数以优化性能
 performance:
-  # 防抖窗口（毫秒）
-  debounce_window: 100
-  # 批量处理大小
-  batch_size: 100
-  # 并发处理数
-  concurrency: 10
-  # 事件队列大小
-  queue_size: 10000
-  # 工作池大小
-  worker_pool_size: 50
+  debounce_window: 100    # 防抖窗口（毫秒），在时间窗口内聚合相同规则的操作
+  batch_size: 100        # 批量处理大小，达到此数量时立即触发批量操作
+  concurrency: 10        # 并发处理数，同时处理的事件数量
+  queue_size: 10000      # 事件队列大小，超过此大小会阻塞
+  worker_pool_size: 50   # 工作池大小，用于执行动作的 goroutine 数量
 
 # 日志配置
+# 控制日志的输出级别、格式和位置
 logging:
-  level: "info"  # debug, info, warn, error
-  format: "text" # json, text
-  output: "stdout" # stdout, file
-  file: "/var/log/bingo/bingo.log"
-  max_size: 100  # MB
-  max_backups: 10
-  max_age: 30    # days
+  level: "info"           # 日志级别: debug（最详细）, info, warn, error（仅错误）
+  format: "text"          # 日志格式: text（彩色控制台）, json（结构化，便于日志收集）
+  output: "stdout"        # 输出目标: stdout（标准输出）, file（文件输出）
+  file: "/var/log/bingo/bingo.log"  # 日志文件路径（仅在 output=file 时生效）
+  max_size: 100           # 单个日志文件最大大小（MB），超过后自动轮转
+  max_backups: 10         # 保留的日志文件备份数量
+  max_age: 30             # 日志文件保留天数，超过后自动删除
 
