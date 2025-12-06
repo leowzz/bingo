@@ -391,6 +391,9 @@ func (h *EventHandler) worker(id int) {
 
 // processEvent 处理单个事件（原来的同步处理逻辑）
 func (h *EventHandler) processEvent(event *listener.Event) {
+	// 处理完成后归还Event到对象池
+	defer listener.PutEventToPool(event)
+
 	startTime := time.Now()
 
 	// Debug: 打印收到的事件信息
@@ -432,7 +435,7 @@ func (h *EventHandler) processEvent(event *listener.Event) {
 		"rule_ids", func() []string {
 			ids := make([]string, len(matchedRules))
 			for i, r := range matchedRules {
-				ids[i] = r.ID
+				ids[i] = r.ID // r现在是*Rule指针
 			}
 			return ids
 		}(),

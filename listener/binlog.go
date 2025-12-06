@@ -214,17 +214,17 @@ func (l *BinlogListener) OnRow(e *canal.RowsEvent) error {
 func (l *BinlogListener) handleInsert(e *canal.RowsEvent, columns []schema.TableColumn, tableName string) error {
 	for _, row := range e.Rows {
 		newRow := rowToMap(columns, row)
-		event := &Event{
-			Table:     tableName,
-			Action:    ActionInsert,
-			Timestamp: time.Now(),
-			NewRow:    newRow,
-			Schema:    e.Table.Schema,
-			TableName: e.Table.Name,
-		}
+		event := GetEventFromPool()
+		event.Table = tableName
+		event.Action = ActionInsert
+		event.Timestamp = time.Now()
+		event.NewRow = newRow
+		event.Schema = e.Table.Schema
+		event.TableName = e.Table.Name
 		if err := l.handler.OnEvent(event); err != nil {
 			return err
 		}
+		// 注意：Event通过channel传递，归还操作在EventHandler的processEvent中完成
 	}
 	return nil
 }
@@ -233,17 +233,17 @@ func (l *BinlogListener) handleInsert(e *canal.RowsEvent, columns []schema.Table
 func (l *BinlogListener) handleDelete(e *canal.RowsEvent, columns []schema.TableColumn, tableName string) error {
 	for _, row := range e.Rows {
 		oldRow := rowToMap(columns, row)
-		event := &Event{
-			Table:     tableName,
-			Action:    ActionDelete,
-			Timestamp: time.Now(),
-			OldRow:    oldRow,
-			Schema:    e.Table.Schema,
-			TableName: e.Table.Name,
-		}
+		event := GetEventFromPool()
+		event.Table = tableName
+		event.Action = ActionDelete
+		event.Timestamp = time.Now()
+		event.OldRow = oldRow
+		event.Schema = e.Table.Schema
+		event.TableName = e.Table.Name
 		if err := l.handler.OnEvent(event); err != nil {
 			return err
 		}
+		// 注意：Event通过channel传递，归还操作在EventHandler的processEvent中完成
 	}
 	return nil
 }
@@ -255,18 +255,18 @@ func (l *BinlogListener) handleUpdate(e *canal.RowsEvent, columns []schema.Table
 		if i+1 < len(e.Rows) {
 			oldRow := rowToMap(columns, e.Rows[i])
 			newRow := rowToMap(columns, e.Rows[i+1])
-			event := &Event{
-				Table:     tableName,
-				Action:    ActionUpdate,
-				Timestamp: time.Now(),
-				OldRow:    oldRow,
-				NewRow:    newRow,
-				Schema:    e.Table.Schema,
-				TableName: e.Table.Name,
-			}
+			event := GetEventFromPool()
+			event.Table = tableName
+			event.Action = ActionUpdate
+			event.Timestamp = time.Now()
+			event.OldRow = oldRow
+			event.NewRow = newRow
+			event.Schema = e.Table.Schema
+			event.TableName = e.Table.Name
 			if err := l.handler.OnEvent(event); err != nil {
 				return err
 			}
+			// 注意：Event通过channel传递，归还操作在EventHandler的processEvent中完成
 		}
 	}
 	return nil
