@@ -21,6 +21,7 @@ help:
 	@echo "  make test-verbose   - 运行单元测试（详细输出）"
 	@echo "  make test-coverage  - 运行单元测试并生成覆盖率报告"
 	@echo "  make benchmark      - 运行所有 benchmark 测试"
+	@echo "  make benchmark-main - 运行主 benchmark 测试（性能指标）"
 	@echo "  make benchmark-all  - 运行所有 benchmark（包含对比测试）"
 	@echo "  make benchmark-logger - 仅运行 logger 的 benchmark"
 	@echo "  make benchmark-comparison - 运行格式对比 benchmark"
@@ -72,6 +73,11 @@ test-coverage:
 benchmark:
 	@echo "运行 benchmark 测试..."
 	@go test -bench=. $(GO_BENCH_FLAGS) -benchtime=$(GO_BENCH_TIME) ./...
+
+## benchmark-main: 运行主 benchmark 测试（性能指标）
+benchmark-main:
+	@echo "运行主 benchmark 测试（性能指标）..."
+	@go test -bench=. $(GO_BENCH_FLAGS) -benchtime=$(GO_BENCH_TIME) .
 
 ## benchmark-all: 运行所有 benchmark（包含详细对比）
 benchmark-all:

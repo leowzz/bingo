@@ -5,7 +5,15 @@ import (
 	"os"
 	"sort"
 
+	"github.com/google/cel-go/cel"
 	"gopkg.in/yaml.v3"
+)
+
+// 事件类型位标志常量
+const (
+	EventBitInsert uint8 = 1 << iota // 1
+	EventBitUpdate                   // 2
+	EventBitDelete                   // 4
 )
 
 // Rule 规则定义
@@ -13,11 +21,17 @@ type Rule struct {
 	ID       string       `yaml:"id"`
 	Name     string       `yaml:"name"`
 	Database string       `yaml:"database"` // 数据库名（必填）
-	Table    string       `yaml:"table"`   // 表名（必填）
+	Table    string       `yaml:"table"`    // 表名（必填）
 	Events   []string     `yaml:"events"`
 	Filter   string       `yaml:"filter,omitempty"`
 	Actions  []Action     `yaml:"actions"`
 	Batch    *BatchConfig `yaml:"batch,omitempty"`
+
+	// 预处理字段（运行时优化使用，不序列化）
+	FullTableName    string      `yaml:"-"` // 预计算的 database.table
+	InterestedEvents uint8       `yaml:"-"` // 位标志：INSERT=1, UPDATE=2, DELETE=4
+	CompiledFilter   cel.Program `yaml:"-"` // 缓存的CEL程序（简单表达式预编译）
+	FilterCacheKey   string      `yaml:"-"` // 用于缓存查找的key
 }
 
 // Action 动作定义
@@ -84,6 +98,10 @@ func LoadRules(path string) ([]Rule, error) {
 		if err := validateRule(&config.Rules[i]); err != nil {
 			return nil, fmt.Errorf("规则 %s 验证失败: %w", config.Rules[i].ID, err)
 		}
+		// 预处理规则（计算优化字段）
+		if err := preprocessRule(&config.Rules[i]); err != nil {
+			return nil, fmt.Errorf("规则 %s 预处理失败: %w", config.Rules[i].ID, err)
+		}
 	}
 
 	return config.Rules, nil
@@ -105,6 +123,10 @@ func LoadRulesWithRedisConnections(path string) (*RulesConfig, error) {
 	for i := range config.Rules {
 		if err := validateRule(&config.Rules[i]); err != nil {
 			return nil, fmt.Errorf("规则 %s 验证失败: %w", config.Rules[i].ID, err)
+		}
+		// 预处理规则（计算优化字段）
+		if err := preprocessRule(&config.Rules[i]); err != nil {
+			return nil, fmt.Errorf("规则 %s 预处理失败: %w", config.Rules[i].ID, err)
 		}
 	}
 
@@ -142,6 +164,92 @@ func validateRule(rule *Rule) error {
 	}
 
 	return nil
+}
+
+// preprocessRule 预处理规则，计算优化字段
+//
+// 计算 FullTableName、InterestedEvents 等字段，用于性能优化。
+// 如果表达式简单，也会预编译 CEL 程序。
+func preprocessRule(rule *Rule) error {
+	// 计算完整表名
+	rule.FullTableName = fmt.Sprintf("%s.%s", rule.Database, rule.Table)
+
+	// 计算事件类型位标志
+	rule.InterestedEvents = 0
+	for _, event := range rule.Events {
+		switch event {
+		case "INSERT":
+			rule.InterestedEvents |= EventBitInsert
+		case "UPDATE":
+			rule.InterestedEvents |= EventBitUpdate
+		case "DELETE":
+			rule.InterestedEvents |= EventBitDelete
+		}
+	}
+
+	// 设置缓存key
+	rule.FilterCacheKey = rule.Filter
+
+	// 简单表达式预编译（在规则加载时完成）
+	// 复杂表达式将在运行时按需编译并缓存
+	if rule.Filter != "" && rule.Filter != "true" {
+		if isSimpleFilter(rule.Filter) {
+			prg, err := compileFilter(rule.Filter)
+			if err == nil {
+				rule.CompiledFilter = prg
+			}
+			// 如果编译失败，将在运行时按需编译
+		}
+	}
+
+	return nil
+}
+
+// isSimpleFilter 判断是否为简单表达式
+//
+// 简单表达式可以在规则加载时预编译，复杂表达式按需编译。
+func isSimpleFilter(filter string) bool {
+	// 简单表达式的特征：
+	// 1. 长度较短（<100字符）
+	// 2. 不包含复杂操作符（如 &&, ||, 嵌套括号等）
+	if len(filter) > 100 {
+		return false
+	}
+
+	// 检查是否包含复杂操作符
+	complexOps := []string{"&&", "||", "(", ")", "[", "]"}
+	opCount := 0
+	for _, op := range complexOps {
+		for i := 0; i < len(filter); i++ {
+			if i+len(op) <= len(filter) && filter[i:i+len(op)] == op {
+				opCount++
+			}
+		}
+	}
+
+	// 如果操作符数量超过阈值，认为是复杂表达式
+	return opCount <= 3
+}
+
+// compileFilter 编译CEL表达式
+//
+// 这是一个辅助函数，用于预编译简单表达式。
+func compileFilter(filter string) (cel.Program, error) {
+	if err := initCELEnv(); err != nil {
+		return nil, err
+	}
+
+	ast, issues := celEnv.Compile(filter)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("编译 CEL 表达式失败: %w", issues.Err())
+	}
+
+	prg, err := celEnv.Program(ast)
+	if err != nil {
+		return nil, fmt.Errorf("创建 CEL 程序失败: %w", err)
+	}
+
+	return prg, nil
 }
 
 // ExtractMonitoredTables 从规则列表中提取所有需要监控的表

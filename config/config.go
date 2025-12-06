@@ -45,10 +45,10 @@ func (m MySQLConfig) Addr() string {
 func (m MySQLConfig) ConnCfgHash() string {
 	// 构建用于 hash 的字符串
 	hashInput := fmt.Sprintf("%s:%d:%s:%s:%s", m.Host, m.Port, m.User, m.Password, m.Database)
-	
+
 	// 计算 SHA256 hash
 	hash := sha256.Sum256([]byte(hashInput))
-	
+
 	// 返回前 12 个字符（24 个十六进制字符的一半，足够区分）
 	return hex.EncodeToString(hash[:])[:12]
 }
@@ -134,7 +134,11 @@ func (c *Config) setDefaults() {
 		c.Performance.Concurrency = 10
 	}
 	if c.Performance.QueueSize == 0 {
-		c.Performance.QueueSize = 10000
+		c.Performance.QueueSize = 4096 // 优化：降低默认队列大小，减少缓存失效
+	}
+	// 限制最大队列大小，避免过大导致性能下降
+	if c.Performance.QueueSize > 8192 {
+		c.Performance.QueueSize = 8192
 	}
 	if c.Performance.WorkerPoolSize == 0 {
 		c.Performance.WorkerPoolSize = 50

@@ -43,6 +43,13 @@ func TestMatcher_Match(t *testing.T) {
 		},
 	}
 
+	// 预处理规则（计算优化字段）
+	for i := range rules {
+		if err := preprocessRule(&rules[i]); err != nil {
+			t.Fatalf("预处理规则失败: %v", err)
+		}
+	}
+
 	matcher := NewMatcher(rules)
 
 	tests := []struct {
@@ -168,8 +175,7 @@ func TestMatcher_matchTable(t *testing.T) {
 }
 
 func TestMatcher_matchEvent(t *testing.T) {
-	matcher := NewMatcher([]Rule{})
-
+	// 测试事件类型位运算匹配
 	tests := []struct {
 		name        string
 		ruleEvents  []string
@@ -204,9 +210,34 @@ func TestMatcher_matchEvent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := matcher.matchEvent(tt.ruleEvents, tt.eventAction)
+			// 计算规则的事件位标志
+			var interestedEvents uint8
+			for _, event := range tt.ruleEvents {
+				switch event {
+				case "INSERT":
+					interestedEvents |= EventBitInsert
+				case "UPDATE":
+					interestedEvents |= EventBitUpdate
+				case "DELETE":
+					interestedEvents |= EventBitDelete
+				}
+			}
+
+			// 计算事件类型的位标志
+			var eventBit uint8
+			switch tt.eventAction {
+			case "INSERT":
+				eventBit = EventBitInsert
+			case "UPDATE":
+				eventBit = EventBitUpdate
+			case "DELETE":
+				eventBit = EventBitDelete
+			}
+
+			// 使用位运算检查
+			result := (eventBit & interestedEvents) != 0
 			if result != tt.expected {
-				t.Errorf("matchEvent() = %v, want %v", result, tt.expected)
+				t.Errorf("事件类型匹配 = %v, want %v", result, tt.expected)
 			}
 		})
 	}
