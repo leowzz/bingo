@@ -402,11 +402,11 @@ func (r *RedisExecutor) UpdateConnections(connections []engine.RedisConnectionCo
 			continue
 		}
 
-		// 如果连接已存在，先关闭旧连接
-		if oldClient, exists := r.clients[conn.Name]; exists {
-			// 检查连接配置是否改变
-			// 这里简化处理，直接关闭旧连接创建新连接
-			oldClient.Close()
+		// 如果连接已存在，先创建新连接，再替换旧连接
+		// 这样可以避免关闭旧连接时影响正在执行的命令
+		var oldClient *redis.Client
+		if existingClient, exists := r.clients[conn.Name]; exists {
+			oldClient = existingClient
 		}
 
 		// 创建新连接
@@ -419,12 +419,32 @@ func (r *RedisExecutor) UpdateConnections(connections []engine.RedisConnectionCo
 		// 测试连接
 		ctx := context.Background()
 		if err := client.Ping(ctx).Err(); err != nil {
-			logger.Warnw("Redis 连接失败，跳过", "name", conn.Name, "addr", conn.Addr, "error", err)
+			// 如果新连接失败，保持旧连接
+			err := client.Close()
+			if err != nil {
+				logger.Warnw("Redis 连接关闭失败")
+			}
+			logger.Warnw("Redis 连接失败，保持旧连接", "name", conn.Name, "addr", conn.Addr, "error", err)
 			continue
 		}
 
+		// 先更新 map 中的连接（原子操作）
 		r.clients[conn.Name] = client
 		logger.Infow("更新 Redis 连接", "name", conn.Name, "addr", conn.Addr, "db", conn.DB)
+
+		// 在锁外异步关闭旧连接，给正在执行的命令一些时间完成
+		// 注意：这里不能使用 defer，因为需要在锁外执行
+		if oldClient != nil {
+			go func(clientToClose *redis.Client, connName string) {
+				// 等待一小段时间，让正在执行的命令完成
+				time.Sleep(100 * time.Millisecond)
+				if err := clientToClose.Close(); err != nil {
+					logger.Warnw("关闭旧 Redis 连接失败", "name", connName, "error", err)
+				} else {
+					logger.Debugw("关闭旧 Redis 连接成功", "name", connName)
+				}
+			}(oldClient, conn.Name)
+		}
 	}
 
 	return nil
