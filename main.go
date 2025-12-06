@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -43,6 +44,33 @@ func NewApp(cfgPath string) (*App, error) {
 		return nil, err
 	}
 
+	// 设置 GOMAXPROCS，避免在容器环境中误用过多 CPU 核心
+	//
+	// 问题背景：
+	// 在 Docker/K8S 容器中，如果 Pod 没有配置 CPU Limit，Go 程序启动时会通过
+	// runtime.NumCPU() 读取 /proc/cpuinfo，可能误认为拥有宿主机的全部核心（如 256 个）。
+	// 这会导致 Go 运行时创建大量逻辑处理器（P）和系统线程（M），引发严重的性能问题：
+	//
+	// 1. 调度风暴：大量线程上下文切换导致 L1/L2 缓存命中率急剧下降
+	// 2. 锁竞争恶化：256 个线程同时争抢共享资源（队列 Channel、规则 Map、内存分配器锁）
+	// 3. GC 压力：P 数量越多，GC 协调开销越大，STW 时间显著增加
+	// 4. 内存底噪：每个 P 的本地缓存（mcache）导致内存占用增加
+	//
+	// 对于 BinGo 这种 Binlog 处理引擎（串行顺序性要求高、IO 密集型、含锁竞争），
+	// 必须通过显式设置 GOMAXPROCS 来限制并发度，避免性能倒退。
+	//
+	// 设置策略：WorkerPoolSize + 4
+	// - WorkerPoolSize：工作池大小，用于处理 Binlog 事件
+	// - +4：为系统 goroutine（如 GC、网络 I/O、信号处理等）预留额外容量
+	// 与系统实际 CPU 核心数取最小值，避免配置错误导致设置过高
+	actualCPU := runtime.NumCPU()
+	desiredProcs := cfg.Performance.WorkerPoolSize + 4
+	maxProcs := desiredProcs
+	if maxProcs > actualCPU {
+		maxProcs = actualCPU
+	}
+	runtime.GOMAXPROCS(maxProcs)
+
 	// 初始化日志
 	if err := logger.InitLogger(
 		cfg.Logging.Level,
@@ -57,6 +85,13 @@ func NewApp(cfgPath string) (*App, error) {
 		return nil, err
 	}
 	defer logger.Sync()
+
+	// 记录 GOMAXPROCS 设置信息
+	if maxProcs < desiredProcs {
+		logger.Infof("GOMAXPROCS 已设置为 %d（期望值: %d，系统 CPU 核心数: %d，已限制以避免超出系统能力）", maxProcs, desiredProcs, actualCPU)
+	} else {
+		logger.Infof("GOMAXPROCS 已设置为 %d（系统 CPU 核心数: %d，工作池大小: %d）", maxProcs, actualCPU, cfg.Performance.WorkerPoolSize)
+	}
 
 	// 加载规则和 Redis 连接配置
 	rulesConfig, err := engine.LoadRulesWithRedisConnections(cfg.RulesFile)
