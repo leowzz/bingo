@@ -18,14 +18,15 @@ const (
 
 // Rule 规则定义
 type Rule struct {
-	ID       string       `yaml:"id"`
-	Name     string       `yaml:"name"`
-	Database string       `yaml:"database"` // 数据库名（必填）
-	Table    string       `yaml:"table"`    // 表名（必填）
-	Events   []string     `yaml:"events"`
-	Filter   string       `yaml:"filter,omitempty"`
-	Actions  []Action     `yaml:"actions"`
-	Batch    *BatchConfig `yaml:"batch,omitempty"`
+	ID       string          `yaml:"id"`
+	Name     string          `yaml:"name"`
+	Database string          `yaml:"database"` // 数据库名（必填）
+	Table    string          `yaml:"table"`    // 表名（必填）
+	Events   []string        `yaml:"events"`
+	Filter   string          `yaml:"filter,omitempty"`
+	Actions  []Action        `yaml:"actions"`
+	Batch    *BatchConfig    `yaml:"batch,omitempty"`
+	Ordering *OrderingConfig `yaml:"ordering,omitempty"`
 
 	// 预处理字段（运行时优化使用，不序列化）
 	FullTableName    string      `yaml:"-"` // 预计算的 database.table
@@ -65,6 +66,13 @@ type BatchConfig struct {
 	Enabled bool `yaml:"enabled"`
 	Window  int  `yaml:"window"`   // 时间窗口（毫秒）
 	MaxSize int  `yaml:"max_size"` // 最大聚合数量
+}
+
+// OrderingConfig 顺序性保障配置
+type OrderingConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	KeyField string `yaml:"key_field"` // 用于分片的主键字段
+	Shards   int    `yaml:"shards"`    // 分片数量
 }
 
 // RulesConfig 规则配置

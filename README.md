@@ -412,6 +412,16 @@ rules:
       max_size: 1000  # 最大聚合数量
 ```
 
+**功能说明**：
+- 当规则启用 `batch` 配置时，匹配的事件会被收集到批量收集器中
+- 在时间窗口（`window`）内或达到最大数量（`max_size`）时，批量执行动作
+- 批量 key 基于表名和动作类型生成，确保同一表同一动作类型的事件被聚合
+
+**实现细节**：
+- ✅ `BatchConfig` 结构体已定义（`engine/rule.go`）
+- ✅ `BatchCollector` 工具类已实现（`utils/debounce.go`）
+- ✅ 事件处理流程中已集成（`main.go` 的 `EventHandler`）
+
 ### 2. 顺序性保障
 
 基于主键 Hash 分发事件，确保同一实体的变更串行处理：
@@ -424,6 +434,16 @@ rules:
       key_field: "id"  # 用于分片的主键字段
       shards: 10       # 分片数量
 ```
+
+**功能说明**：
+- 当规则启用 `ordering` 配置时，事件会根据主键字段值进行 Hash 分片
+- 相同主键值的事件会被分发到同一个分片队列，确保串行处理
+- 每个分片有独立的 goroutine 处理，不同分片可以并行处理
+
+**实现细节**：
+- ✅ `OrderingConfig` 结构体已定义（`engine/rule.go`）
+- ✅ 基于 FNV-1a Hash 算法的分片计算（`main.go` 的 `calculateShard`）
+- ✅ 分片队列和独立处理 goroutine 已实现（`main.go` 的 `orderingShardWorker`）
 
 ### 3. 并发控制
 

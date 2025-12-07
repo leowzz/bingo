@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 	"bingo/internal/logger"
 	"bingo/internal/metrics"
 	"bingo/listener"
+	"bingo/utils"
 
 	"github.com/go-mysql-org/go-mysql/canal"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -287,6 +289,11 @@ func (a *App) reloadRules(rulesConfig *engine.RulesConfig) error {
 	a.matcher.UpdateRules(rulesConfig.Rules)
 	logger.Infof("已更新 %d 条规则", len(rulesConfig.Rules))
 
+	// 更新事件处理器的规则相关资源（batch collectors 和 ordering shards）
+	if a.eventHandler != nil {
+		a.eventHandler.UpdateRules(rulesConfig.Rules)
+	}
+
 	// 更新 Redis 连接配置
 	if a.redisExec != nil {
 		if err := a.redisExec.UpdateConnections(rulesConfig.RedisConnections); err != nil {
@@ -327,16 +334,26 @@ type EventHandler struct {
 	workers    int
 	wg         sync.WaitGroup
 	stopChan   chan struct{}
+
+	// Batch 支持：规则ID -> BatchCollector
+	batchCollectors map[string]*utils.BatchCollector
+	batchMu         sync.RWMutex
+
+	// Ordering 支持：规则ID -> 分片队列数组
+	orderingShards map[string][]chan *listener.Event
+	orderingMu     sync.RWMutex
 }
 
 // NewEventHandler 创建新的事件处理器
 func NewEventHandler(matcher *engine.Matcher, executor *executor.Executor, queueSize, workerPoolSize int) *EventHandler {
 	return &EventHandler{
-		matcher:    matcher,
-		executor:   executor,
-		eventQueue: make(chan *listener.Event, queueSize),
-		workers:    workerPoolSize,
-		stopChan:   make(chan struct{}),
+		matcher:         matcher,
+		executor:        executor,
+		eventQueue:      make(chan *listener.Event, queueSize),
+		workers:         workerPoolSize,
+		stopChan:        make(chan struct{}),
+		batchCollectors: make(map[string]*utils.BatchCollector),
+		orderingShards:  make(map[string][]chan *listener.Event),
 	}
 }
 
@@ -356,6 +373,24 @@ func (h *EventHandler) Stop() {
 	// 先关闭 stopChan，通知 worker 准备停止（不再接受新事件入队）
 	// 同时 OnEvent 也会检测到 stopChan 关闭，会同步处理事件而不是入队
 	close(h.stopChan)
+
+	// 刷新所有 batch collectors
+	h.batchMu.Lock()
+	for ruleID, collector := range h.batchCollectors {
+		logger.Infow("刷新批量收集器", "rule_id", ruleID)
+		collector.FlushAll()
+	}
+	h.batchMu.Unlock()
+
+	// 关闭所有 ordering shard 队列
+	h.orderingMu.Lock()
+	for ruleID, shards := range h.orderingShards {
+		logger.Infow("关闭顺序保障分片队列", "rule_id", ruleID, "shard_count", len(shards))
+		for _, shard := range shards {
+			close(shard)
+		}
+	}
+	h.orderingMu.Unlock()
 
 	// 等待所有 worker 处理完队列中的剩余事件
 	logger.Info("等待工作线程处理完队列中的事件...")
@@ -426,8 +461,14 @@ func (h *EventHandler) worker(id int) {
 
 // processEvent 处理单个事件（原来的同步处理逻辑）
 func (h *EventHandler) processEvent(event *listener.Event) {
-	// 处理完成后归还Event到对象池
-	defer listener.PutEventToPool(event)
+	// 注意：对于 batch 和 ordering 模式，事件会在异步处理完成后归还
+	// 对于普通模式，在函数结束时归还
+	needReturnToPool := true
+	defer func() {
+		if needReturnToPool {
+			listener.PutEventToPool(event)
+		}
+	}()
 
 	startTime := time.Now()
 
@@ -470,56 +511,303 @@ func (h *EventHandler) processEvent(event *listener.Event) {
 		"rule_ids", func() []string {
 			ids := make([]string, len(matchedRules))
 			for i, r := range matchedRules {
-				ids[i] = r.ID // r现在是*Rule指针
+				ids[i] = r.ID
 			}
 			return ids
 		}(),
 	)
 
-	// 执行匹配规则的动作
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
+	// 处理每个匹配的规则
+	hasAsyncProcessing := false
 	for _, rule := range matchedRules {
-		ruleStartTime := time.Now()
-
-		// 记录规则匹配
-		metrics.RecordRuleMatched(rule.ID, event.Table, string(event.Action))
-
-		logger.Infow("执行规则",
-			"rule_id", rule.ID,
-			"rule_name", rule.Name,
-			"table", event.Table,
-			"action", event.Action,
-		)
-
-		if err := h.executor.ExecuteActions(ctx, rule.Actions, event); err != nil {
-			logger.Errorw("规则执行失败",
-				"rule_id", rule.ID,
-				"error", err,
-				"table", event.Table,
-				"action", event.Action,
-			)
-
-			// 记录失败的动作
-			for _, action := range rule.Actions {
-				metrics.RecordActionFailed(action.Type, rule.ID, "execution_error")
-			}
-		} else {
-			logger.Infow("规则执行成功", "rule_id", rule.ID)
-
-			// 记录成功的动作和处理耗时
-			duration := time.Since(ruleStartTime).Seconds()
-			for _, action := range rule.Actions {
-				metrics.RecordActionExecuted(action.Type, rule.ID)
-				metrics.RecordProcessingDuration(rule.ID, action.Type, duration)
-			}
+		// 检查是否需要批量处理
+		if rule.Batch != nil && rule.Batch.Enabled {
+			h.handleBatchRule(rule, event)
+			hasAsyncProcessing = true
+			continue
 		}
+
+		// 检查是否需要顺序保障
+		if rule.Ordering != nil && rule.Ordering.Enabled {
+			h.handleOrderingRule(rule, event)
+			hasAsyncProcessing = true
+			continue
+		}
+
+		// 普通处理：立即执行
+		h.executeRule(rule, event, startTime)
+	}
+
+	// 如果有异步处理，不在这里归还事件（会在异步处理完成后归还）
+	if hasAsyncProcessing {
+		needReturnToPool = false
 	}
 
 	// 记录总处理耗时
 	totalDuration := time.Since(startTime).Seconds()
 	metrics.RecordProcessingDuration("total", "event", totalDuration)
+}
+
+// handleBatchRule 处理启用批量聚合的规则
+func (h *EventHandler) handleBatchRule(rule engine.Rule, event *listener.Event) {
+	h.batchMu.RLock()
+	collector, exists := h.batchCollectors[rule.ID]
+	h.batchMu.RUnlock()
+
+	if !exists {
+		// 创建新的 batch collector
+		window := time.Duration(rule.Batch.Window) * time.Millisecond
+		if window == 0 {
+			window = 100 * time.Millisecond // 默认 100ms
+		}
+		maxSize := rule.Batch.MaxSize
+		if maxSize == 0 {
+			maxSize = 1000 // 默认 1000
+		}
+
+		collector = utils.NewBatchCollector(window, maxSize, func(key string, items []interface{}) {
+			// 批量执行回调
+			h.executeBatchActions(rule, items)
+		})
+
+		h.batchMu.Lock()
+		h.batchCollectors[rule.ID] = collector
+		h.batchMu.Unlock()
+
+		logger.Infow("创建批量收集器",
+			"rule_id", rule.ID,
+			"window_ms", rule.Batch.Window,
+			"max_size", maxSize,
+		)
+	}
+
+	// 生成 batch key（基于表名和动作类型）
+	batchKey := fmt.Sprintf("%s:%s", event.Table, event.Action)
+	collector.Add(batchKey, event)
+}
+
+// handleOrderingRule 处理启用顺序保障的规则
+func (h *EventHandler) handleOrderingRule(rule engine.Rule, event *listener.Event) {
+	// 获取主键值
+	keyValue := event.GetFieldString(rule.Ordering.KeyField)
+	if keyValue == "" {
+		logger.Warnw("顺序保障规则缺少主键字段值，使用普通处理",
+			"rule_id", rule.ID,
+			"key_field", rule.Ordering.KeyField,
+		)
+		// 注意：这里直接执行，事件会在 processEvent 中归还
+		// 所以不需要特殊处理
+		h.executeRule(rule, event, time.Now())
+		return
+	}
+
+	// 计算分片索引
+	shardIndex := h.calculateShard(keyValue, rule.Ordering.Shards)
+
+	// 获取或创建分片队列
+	h.orderingMu.RLock()
+	shards, exists := h.orderingShards[rule.ID]
+	h.orderingMu.RUnlock()
+
+	if !exists {
+		// 创建分片队列
+		shardCount := rule.Ordering.Shards
+		if shardCount == 0 {
+			shardCount = 10 // 默认 10 个分片
+		}
+		shards = make([]chan *listener.Event, shardCount)
+		// 保存规则引用，避免值传递导致的问题
+		rulePtr := &rule
+		for i := 0; i < shardCount; i++ {
+			shards[i] = make(chan *listener.Event, cap(h.eventQueue))
+			// 启动分片处理 goroutine
+			go h.orderingShardWorker(rulePtr, i, shards[i])
+		}
+
+		h.orderingMu.Lock()
+		h.orderingShards[rule.ID] = shards
+		h.orderingMu.Unlock()
+
+		logger.Infow("创建顺序保障分片队列",
+			"rule_id", rule.ID,
+			"shard_count", shardCount,
+		)
+	}
+
+	// 将事件发送到对应的分片队列
+	select {
+	case shards[shardIndex] <- event:
+		// 成功入队
+	case <-h.stopChan:
+		// 正在关闭，同步处理
+		h.executeRule(rule, event, time.Now())
+	default:
+		// 队列满，同步处理（避免阻塞）
+		logger.Warnw("顺序保障分片队列已满，同步处理",
+			"rule_id", rule.ID,
+			"shard_index", shardIndex,
+		)
+		h.executeRule(rule, event, time.Now())
+	}
+}
+
+// orderingShardWorker 顺序保障分片工作线程
+func (h *EventHandler) orderingShardWorker(rule *engine.Rule, shardIndex int, shardQueue chan *listener.Event) {
+	for {
+		select {
+		case event, ok := <-shardQueue:
+			if !ok {
+				return
+			}
+			h.executeRule(*rule, event, time.Now())
+		case <-h.stopChan:
+			// 处理剩余事件
+			for {
+				select {
+				case event, ok := <-shardQueue:
+					if !ok {
+						return
+					}
+					h.executeRule(*rule, event, time.Now())
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// calculateShard 计算分片索引
+func (h *EventHandler) calculateShard(keyValue string, shardCount int) int {
+	if shardCount <= 0 {
+		shardCount = 10
+	}
+	// 使用 FNV-1a hash 算法
+	hash := fnv.New32a()
+	hash.Write([]byte(keyValue))
+	return int(hash.Sum32()) % shardCount
+}
+
+// executeBatchActions 批量执行动作
+func (h *EventHandler) executeBatchActions(rule engine.Rule, events []interface{}) {
+	if len(events) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 将事件列表转换为 []*listener.Event
+	eventList := make([]*listener.Event, 0, len(events))
+	for _, item := range events {
+		if evt, ok := item.(*listener.Event); ok {
+			eventList = append(eventList, evt)
+		}
+	}
+
+	logger.Infow("批量执行规则",
+		"rule_id", rule.ID,
+		"batch_size", len(eventList),
+	)
+
+	// 批量执行每个动作
+	for _, action := range rule.Actions {
+		// 注意：这里需要执行器支持批量操作
+		// 目前先逐个执行，后续可以优化为真正的批量操作
+		for _, event := range eventList {
+			if err := h.executor.Execute(ctx, action, event); err != nil {
+				logger.Errorw("批量执行动作失败",
+					"rule_id", rule.ID,
+					"action_type", action.Type,
+					"error", err,
+				)
+				metrics.RecordActionFailed(action.Type, rule.ID, "batch_execution_error")
+			} else {
+				metrics.RecordActionExecuted(action.Type, rule.ID)
+			}
+		}
+	}
+
+	// 归还事件到对象池
+	for _, event := range eventList {
+		listener.PutEventToPool(event)
+	}
+}
+
+// UpdateRules 更新规则（用于热重载）
+func (h *EventHandler) UpdateRules(rules []engine.Rule) {
+	// 清理旧的 batch collectors 和 ordering shards
+	h.batchMu.Lock()
+	// 获取当前规则ID集合
+	currentRuleIDs := make(map[string]bool)
+	for _, rule := range rules {
+		currentRuleIDs[rule.ID] = true
+	}
+	// 删除不存在的规则对应的 collectors
+	for ruleID, collector := range h.batchCollectors {
+		if !currentRuleIDs[ruleID] {
+			collector.FlushAll()
+			delete(h.batchCollectors, ruleID)
+			logger.Infow("删除批量收集器", "rule_id", ruleID)
+		}
+	}
+	h.batchMu.Unlock()
+
+	h.orderingMu.Lock()
+	// 删除不存在的规则对应的 shards
+	for ruleID, shards := range h.orderingShards {
+		if !currentRuleIDs[ruleID] {
+			for _, shard := range shards {
+				close(shard)
+			}
+			delete(h.orderingShards, ruleID)
+			logger.Infow("删除顺序保障分片队列", "rule_id", ruleID)
+		}
+	}
+	h.orderingMu.Unlock()
+
+	// 新的规则会在首次匹配时自动创建对应的 collectors 和 shards
+}
+
+// executeRule 执行单个规则
+func (h *EventHandler) executeRule(rule engine.Rule, event *listener.Event, startTime time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ruleStartTime := time.Now()
+
+	// 记录规则匹配
+	metrics.RecordRuleMatched(rule.ID, event.Table, string(event.Action))
+
+	logger.Infow("执行规则",
+		"rule_id", rule.ID,
+		"rule_name", rule.Name,
+		"table", event.Table,
+		"action", event.Action,
+	)
+
+	if err := h.executor.ExecuteActions(ctx, rule.Actions, event); err != nil {
+		logger.Errorw("规则执行失败",
+			"rule_id", rule.ID,
+			"error", err,
+			"table", event.Table,
+			"action", event.Action,
+		)
+
+		// 记录失败的动作
+		for _, action := range rule.Actions {
+			metrics.RecordActionFailed(action.Type, rule.ID, "execution_error")
+		}
+	} else {
+		logger.Infow("规则执行成功", "rule_id", rule.ID)
+
+		// 记录成功的动作和处理耗时
+		duration := time.Since(ruleStartTime).Seconds()
+		for _, action := range rule.Actions {
+			metrics.RecordActionExecuted(action.Type, rule.ID)
+			metrics.RecordProcessingDuration(rule.ID, action.Type, duration)
+		}
+	}
 }
 
 func main() {
@@ -535,10 +823,10 @@ func main() {
 			zap.L().Fatal("创建应用失败", zap.Error(err))
 		} else {
 			// 使用 fmt.Printf 打印错误，确保换行生效
-			fmt.Fprintf(os.Stderr, "创建应用失败: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "创建应用失败: %v\n", err)
 			// 如果错误包含详细堆栈信息，也打印出来
 			if errVerbose, ok := err.(interface{ ErrorVerbose() string }); ok {
-				fmt.Fprintf(os.Stderr, "\n详细错误信息:\n%s\n", errVerbose.ErrorVerbose())
+				_, _ = fmt.Fprintf(os.Stderr, "\n详细错误信息:\n%s\n", errVerbose.ErrorVerbose())
 			}
 			os.Exit(1)
 		}
@@ -547,10 +835,10 @@ func main() {
 	// 启动应用
 	if err := app.Start(); err != nil {
 		// 使用 fmt.Printf 打印错误，确保换行生效
-		fmt.Fprintf(os.Stderr, "启动应用失败: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "启动应用失败: %v\n", err)
 		// 如果错误包含详细堆栈信息，也打印出来
 		if errVerbose, ok := err.(interface{ ErrorVerbose() string }); ok {
-			fmt.Fprintf(os.Stderr, "\n详细错误信息:\n%s\n", errVerbose.ErrorVerbose())
+			_, _ = fmt.Fprintf(os.Stderr, "\n详细错误信息:\n%s\n", errVerbose.ErrorVerbose())
 		}
 		os.Exit(1)
 	}
