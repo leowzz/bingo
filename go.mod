@@ -9,12 +9,14 @@ require (
 	github.com/prometheus/client_golang v1.23.2 // Prometheus 客户端, 用于应用指标采集和监控上报
 	github.com/redis/go-redis/v9 v9.17.2 // Redis 客户端, 用于连接和操作 Redis 数据库
 	go.uber.org/zap v1.27.1 // Uber 出品的高性能结构化日志库
-	google.golang.org/grpc v1.77.0 // gRPC 框架, 用于远程过程调用
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // 自动切割和归档日志的日志滚动库
 	gopkg.in/yaml.v3 v3.0.1 // YAML 文件解析库, 用于配置文件和规则文件读取
 )
 
-require github.com/fsnotify/fsnotify v1.9.0
+require (
+	github.com/fsnotify/fsnotify v1.9.0
+	github.com/rabbitmq/amqp091-go v1.10.0
+)
 
 require (
 	cel.dev/expr v0.24.0 // indirect

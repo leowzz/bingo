@@ -104,16 +104,131 @@ rules:
         level: "info"
         message: "订单状态变更: order_id={{ .ID }}, status={{ .Status }}"
 
-  # 示例 3: 用户注册事件
-  # 当有新用户注册时，记录日志
-  - id: "user_registered"
-    name: "用户注册事件"
-    database: "test_db"              # 监控的数据库名（必填）
-    table: "users"                     # 监控的表名（必填）
-    events: ["INSERT"]                 # 仅监听插入事件
-    filter: "true"                     # 所有插入都触发
+  # 示例 3: 发送 Kafka 消息
+  # 当用户注册时，发送消息到 Kafka 主题
+  - id: "user_register_kafka"
+    name: "用户注册 Kafka 消息"
+    database: "test_db"
+    table: "users"
+    events: ["INSERT"]
+    filter: "true"
     actions:
+      - type: "kafka"                    # Kafka 动作
+        brokers:                          # Kafka broker 地址列表
+          - "localhost:9092"
+          - "localhost:9093"
+        topic: "user-events"              # 主题名称（支持模板变量）
+        partition: 0                      # 分区号，0 表示自动选择分区
+        key: "user:{{ .ID }}"             # 消息键（可选，支持模板变量）
+        value: |                          # 消息值（可选，支持模板变量，如果不指定则使用默认 JSON 格式）
+          {
+            "event_type": "user_register",
+            "user_id": {{ .ID }},
+            "email": "{{ .Email }}",
+            "created_at": "{{ .CreatedAt }}"
+          }
       - type: "log"
         level: "info"
-        message: "新用户注册: user_id={{ .ID }}, email={{ .Email }}"
+        message: "用户注册消息已发送到 Kafka: user_id={{ .ID }}"
+
+  # 示例 5: 订单变更发送到 Kafka（使用默认 JSON 格式）
+  # 当订单发生变更时，自动发送订单数据到 Kafka
+  - id: "order_change_kafka"
+    name: "订单变更 Kafka 消息"
+    database: "test_db"
+    table: "orders"
+    events: ["INSERT", "UPDATE"]
+    filter: "true"
+    actions:
+      - type: "kafka"
+        brokers:
+          - "kafka1.example.com:9092"
+          - "kafka2.example.com:9092"
+        topic: "orders.{{ .Action | lower }}"  # 使用模板变量动态生成主题名
+        # 不指定 value，将使用默认的 JSON 格式（包含 NewRow 数据）
+        # 不指定 key，消息将没有键
+      - type: "log"
+        level: "debug"
+        message: "订单变更消息已发送到 Kafka: order_id={{ .ID }}"
+
+  # 示例 6: 发送 RabbitMQ 消息
+  # 当订单完成时，发送消息到 RabbitMQ
+  - id: "order_complete_rabbitmq"
+    name: "订单完成 RabbitMQ 通知"
+    database: "test_db"
+    table: "orders"
+    events: ["UPDATE"]
+    filter: "NewRow['status'] == 'completed' && OldRow['status'] != 'completed'"
+    actions:
+      - type: "rabbitmq"                  # RabbitMQ 动作
+        rabbitmq_url: "amqp://guest:guest@localhost:5672/"
+        rabbitmq_exchange: "order_events"  # 交换机名称
+        rabbitmq_routing_key: "order.completed"  # 路由键（支持模板变量）
+        rabbitmq_message: |                # 消息内容（支持模板变量）
+          {
+            "order_id": "{{ .ID }}",
+            "user_id": {{ .UserId }},
+            "total_amount": {{ .TotalAmount }},
+            "status": "{{ .Status }}",
+            "completed_at": "{{ .UpdatedAt }}"
+          }
+      - type: "log"
+        level: "info"
+        message: "订单完成 RabbitMQ 通知已发送: order_id={{ .ID }}"
+
+  # 示例 7: RabbitMQ 发送到队列（不经过交换机）
+  # 当用户被删除时，发送消息到 RabbitMQ 队列
+  - id: "user_delete_rabbitmq"
+    name: "用户删除 RabbitMQ 通知"
+    database: "test_db"
+    table: "users"
+    events: ["DELETE"]
+    filter: "true"
+    actions:
+      - type: "rabbitmq"
+        rabbitmq_url: "amqp://guest:guest@localhost:5672/"
+        rabbitmq_queue: "user_deletions"  # 直接发送到队列（不经过交换机）
+        rabbitmq_message: "{{ .OldRow | toJson }}"  # 使用默认 JSON 格式
+      - type: "log"
+        level: "info"
+        message: "用户删除 RabbitMQ 通知已发送: user_id={{ .ID }}"
+
+  # 示例 8: 组合使用多个动作类型
+  # 当商品库存变更时，同时执行 Redis、Kafka 和 RabbitMQ 操作
+  - id: "product_stock_change"
+    name: "商品库存变更处理"
+    database: "test_db"
+    table: "products"
+    events: ["UPDATE"]
+    filter: "NewRow['stock'] != OldRow['stock']"
+    actions:
+      - type: "redis"                     # 更新 Redis 缓存
+        cmd: "SET"
+        key: "product:stock:{{ .ID }}"
+        value: "{{ .Stock }}"
+        redis_conn: "cache"
+      - type: "kafka"                     # 发送库存变更消息到 Kafka
+        brokers:
+          - "localhost:9092"
+        topic: "product-stock-changes"
+        key: "product:{{ .ID }}"
+        value: |
+          {
+            "product_id": {{ .ID }},
+            "old_stock": {{ .OldRow.Stock }},
+            "new_stock": {{ .Stock }},
+            "changed_at": "{{ .Timestamp }}"
+          }
+      - type: "rabbitmq"                  # 发送库存变更消息到 RabbitMQ
+        rabbitmq_url: "amqp://guest:guest@localhost:5672/"
+        rabbitmq_exchange: "inventory"
+        rabbitmq_routing_key: "stock.update"
+        rabbitmq_message: |
+          {
+            "product_id": {{ .ID }},
+            "stock": {{ .Stock }}
+          }
+      - type: "log"
+        level: "info"
+        message: "商品库存已更新: product_id={{ .ID }}, stock={{ .Stock }}"
 

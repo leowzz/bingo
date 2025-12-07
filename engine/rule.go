@@ -37,28 +37,30 @@ type Rule struct {
 
 // Action 动作定义
 type Action struct {
-	Type       string            `yaml:"type"`
-	Cmd        string            `yaml:"cmd,omitempty"`        // Redis 命令
-	Key        string            `yaml:"key,omitempty"`        // Redis key
-	Keys       []string          `yaml:"keys,omitempty"`       // Redis keys (批量)
-	Value      string            `yaml:"value,omitempty"`      // Redis value
-	TTL        int               `yaml:"ttl,omitempty"`        // Redis TTL
-	RedisConn  string            `yaml:"redis_conn,omitempty"` // Redis 连接名称（从规则配置的 redis_connections 中选择）
-	URL        string            `yaml:"url,omitempty"`        // Webhook URL
-	Method     string            `yaml:"method,omitempty"`     // HTTP Method
-	Headers    map[string]string `yaml:"headers,omitempty"`
-	Body       string            `yaml:"body,omitempty"`
-	Timeout    int               `yaml:"timeout,omitempty"`
-	Retry      int               `yaml:"retry,omitempty"`
-	Brokers    []string          `yaml:"brokers,omitempty"`     // Kafka brokers
-	Topic      string            `yaml:"topic,omitempty"`       // Kafka topic
-	Partition  int32             `yaml:"partition,omitempty"`   // Kafka partition
-	Endpoint   string            `yaml:"endpoint,omitempty"`    // gRPC endpoint
-	Service    string            `yaml:"service,omitempty"`     // gRPC service name
-	GrpcMethod string            `yaml:"grpc_method,omitempty"` // gRPC method name
-	Request    string            `yaml:"request,omitempty"`     // gRPC request (JSON)
-	Message    string            `yaml:"message,omitempty"`     // Log message
-	Level      string            `yaml:"level,omitempty"`       // Log level
+	Type               string            `yaml:"type"`
+	Cmd                string            `yaml:"cmd,omitempty"`        // Redis 命令
+	Key                string            `yaml:"key,omitempty"`        // Redis key
+	Keys               []string          `yaml:"keys,omitempty"`       // Redis keys (批量)
+	Value              string            `yaml:"value,omitempty"`      // Redis value
+	TTL                int               `yaml:"ttl,omitempty"`        // Redis TTL
+	RedisConn          string            `yaml:"redis_conn,omitempty"` // Redis 连接名称（从规则配置的 redis_connections 中选择）
+	URL                string            `yaml:"url,omitempty"`        // Webhook URL
+	Method             string            `yaml:"method,omitempty"`     // HTTP Method
+	Headers            map[string]string `yaml:"headers,omitempty"`
+	Body               string            `yaml:"body,omitempty"`
+	Timeout            int               `yaml:"timeout,omitempty"`
+	Retry              int               `yaml:"retry,omitempty"`
+	Brokers            []string          `yaml:"brokers,omitempty"`              // Kafka brokers
+	Topic              string            `yaml:"topic,omitempty"`                // Kafka topic
+	Partition          int32             `yaml:"partition,omitempty"`            // Kafka partition
+	RabbitMQUrl        string            `yaml:"rabbitmq_url,omitempty"`         // RabbitMQ 连接URL
+	RabbitMQExchange   string            `yaml:"rabbitmq_exchange,omitempty"`    // RabbitMQ 交换机名称
+	RabbitMQRoutingKey string            `yaml:"rabbitmq_routing_key,omitempty"` // RabbitMQ 路由键（支持模板）
+	RabbitMQQueue      string            `yaml:"rabbitmq_queue,omitempty"`       // RabbitMQ 队列名称（可选）
+	RabbitMQMessage    string            `yaml:"rabbitmq_message,omitempty"`     // RabbitMQ 消息内容（支持模板）
+	Message            string            `yaml:"message,omitempty"`              // Log message
+	Level              string            `yaml:"level,omitempty"`                // Log level
+	Format             string            `yaml:"format,omitempty"`               // Log format (json/text)
 }
 
 // BatchConfig 批量处理配置

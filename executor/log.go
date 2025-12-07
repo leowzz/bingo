@@ -47,9 +47,9 @@ func (l *LogExecutor) Execute(ctx context.Context, action engine.Action, event *
 	}
 
 	// 如果 format 为 json，输出 JSON 格式
-	format := "text"            // 默认文本格式
-	if action.Level == "json" { // 这里可以扩展 Action 结构体添加 Format 字段
-		format = "json"
+	format := action.Format
+	if format == "" {
+		format = "text" // 默认文本格式
 	}
 
 	if format == "json" {

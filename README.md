@@ -95,8 +95,8 @@ server-id=1
 │  3. Action Executor     │
 │  - Redis Adapter        │
 │  - Webhook Adapter      │
-│  - gRPC Adapter         │
-│  - Kafka/RabbitMQ       │
+│  - Kafka Adapter        │
+│  - RabbitMQ Adapter     │
 └─────────────────────────┘
 ```
 
@@ -124,8 +124,8 @@ server-id=1
 - **支持的动作类型**：
   - Redis 操作（DEL/SET/EXPIRE）
   - HTTP Webhook
-  - gRPC 调用
-  - 消息队列（Kafka/RabbitMQ）
+  - Kafka 消息队列
+  - RabbitMQ 消息队列
   - 日志记录
 
 ## ⚙️ 配置说明
@@ -314,19 +314,16 @@ actions:
     partition: 0        # 可选，指定分区
 ```
 
-### 4. gRPC 动作
+### 4. RabbitMQ 动作
 
 ```yaml
 actions:
-  - type: "grpc"
-    endpoint: "localhost:50051"
-    service: "UserService"
-    method: "NotifyUserChange"
-    request: |
-      {
-        "user_id": "{{ .ID }}",
-        "action": "{{ .Action }}"
-      }
+  - type: "rabbitmq"
+    rabbitmq_url: "amqp://guest:guest@localhost:5672/"
+    rabbitmq_exchange: "events"
+    rabbitmq_routing_key: "user.{{ .Action | lower }}"
+    rabbitmq_message: "{{ .NewRow | toJson }}"
+    rabbitmq_queue: ""  # 可选，如果指定则发送到队列而不是交换机
 ```
 
 ### 5. 日志动作
@@ -362,7 +359,7 @@ bingo/
 │   ├── redis.go         # Redis 执行器
 │   ├── webhook.go       # Webhook 执行器
 │   ├── kafka.go         # Kafka 执行器
-│   └── grpc.go          # gRPC 执行器
+│   └── rabbitmq.go      # RabbitMQ 执行器
 ├── utils/
 │   ├── template.go      # 模板渲染
 │   └── debounce.go      # 防抖聚合
@@ -663,8 +660,8 @@ binlog:
 
 ## 📚 更多文档
 
-- [Redis 连接配置说明](REDIS_CONNECTIONS.md) - 详细的 Redis 连接配置和使用指南
-- [测试文档](TESTING.md) - 单元测试说明和覆盖率报告
+- [Redis 连接配置说明](docs/REDIS_CONNECTIONS.md) - 详细的 Redis 连接配置和使用指南
+- [测试文档](docs/TESTING.md) - 单元测试说明和覆盖率报告
 
 ## 📧 联系方式
 

@@ -29,7 +29,7 @@ func NewExecutor() *Executor {
 	exec.Register(NewWebhookExecutor())
 	exec.Register(&LogExecutor{})
 	exec.Register(&KafkaExecutor{})
-	exec.Register(&GrpcExecutor{})
+	exec.Register(&RabbitMQExecutor{})
 
 	return exec
 }
