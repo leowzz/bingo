@@ -21,8 +21,9 @@ BinGo 支持两种类型的 Redis 连接：
 ```yaml
 system_redis:
   addr: "localhost:6379"      # Redis 服务器地址
-  password: ""                 # Redis 密码（如果未设置密码则留空）
-  db: 0                        # Redis 数据库编号
+  username: ""                # Redis 用户名（Redis 6.0+ ACL 支持，可选）
+  password: ""                # Redis 密码（如果未设置密码则留空）
+  db: 0                       # Redis 数据库编号
 ```
 
 ### 使用场景
@@ -41,11 +42,13 @@ system_redis:
 redis_connections:
   - name: "cache"                    # 连接名称
     addr: "localhost:6379"          # Redis 服务器地址
+    username: ""                     # Redis 用户名（Redis 6.0+ ACL 支持，可选）
     password: ""                     # Redis 密码（如果未设置密码则留空）
     db: 1                           # Redis 数据库编号
 
   - name: "session"                  # 另一个连接
     addr: "localhost:6379"
+    username: ""                     # Redis 用户名（Redis 6.0+ ACL 支持，可选）
     password: ""
     db: 2
 ```
@@ -174,6 +177,7 @@ redis_connections:
 ### 4. 安全性
 
 - 生产环境建议使用密码保护
+- 对于 Redis 6.0+，建议使用 ACL 功能，通过用户名和密码实现更精细的权限控制
 - 使用环境变量或密钥管理工具管理敏感信息
 - 限制 Redis 的网络访问权限
 
@@ -187,7 +191,7 @@ redis_connections:
 1. 检查 Redis 服务器是否正常运行
 2. 检查网络连接（防火墙、端口）
 3. 验证地址和端口是否正确
-4. 检查密码是否正确
+4. 检查用户名和密码是否正确（对于 Redis 6.0+ 使用 ACL）
 
 ### 连接不存在
 
@@ -216,6 +220,7 @@ redis_connections:
 # config.yaml
 system_redis:
   addr: "localhost:6379"
+  username: ""      # Redis 用户名（Redis 6.0+ ACL 支持，可选）
   password: ""
   db: 0
 
@@ -223,10 +228,12 @@ system_redis:
 redis_connections:
   - name: "cache"
     addr: "localhost:6379"
+    username: ""    # Redis 用户名（Redis 6.0+ ACL 支持，可选）
     password: ""
     db: 1
   - name: "session"
     addr: "localhost:6379"
+    username: ""    # Redis 用户名（Redis 6.0+ ACL 支持，可选）
     password: ""
     db: 2
 

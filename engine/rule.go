@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
@@ -87,8 +89,26 @@ type RulesConfig struct {
 type RedisConnectionConfig struct {
 	Name     string `yaml:"name"`     // 连接名称
 	Addr     string `yaml:"addr"`     // Redis 服务器地址
+	Username string `yaml:"username"` // Redis 用户名（Redis 6.0+ ACL 支持，可选）
 	Password string `yaml:"password"` // Redis 密码
 	DB       int    `yaml:"db"`       // Redis 数据库编号
+}
+
+// ConnCfgHash 计算 Redis 连接配置的 hash 值
+//
+// 使用 SHA256 计算连接配置的 hash，用于区分不同的 Redis 连接。
+// hash 基于 addr、username、password 和 db 计算。
+//
+// :return: 16 进制字符串形式的 hash 值（前 12 个字符）
+func (r RedisConnectionConfig) ConnCfgHash() string {
+	// 构建用于 hash 的字符串（包含用户名）
+	hashInput := fmt.Sprintf("%s:%s:%s:%d", r.Addr, r.Username, r.Password, r.DB)
+
+	// 计算 SHA256 hash
+	hash := sha256.Sum256([]byte(hashInput))
+
+	// 返回前 12 个字符（24 个十六进制字符的一半，足够区分）
+	return hex.EncodeToString(hash[:])[:12]
 }
 
 // LoadRules 从文件加载规则

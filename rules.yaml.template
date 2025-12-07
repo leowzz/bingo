@@ -52,10 +52,12 @@
 redis_connections:
   - name: "cache"                    # 连接名称
     addr: "localhost:6379"          # Redis 服务器地址
-    password: ""                    # Redis 密码（如果未设置密码则留空）
+    username: ""                     # Redis 用户名（Redis 6.0+ ACL 支持，可选）
+    password: ""                     # Redis 密码（如果未设置密码则留空）
     db: 1                           # Redis 数据库编号
   - name: "session"                 # 另一个 Redis 连接示例
     addr: "localhost:6379"
+    username: ""                     # Redis 用户名（Redis 6.0+ ACL 支持，可选）
     password: ""
     db: 2
 

@@ -21,6 +21,7 @@ mysql:
 # 规则也可以通过 redis_conn: "system" 使用此连接
 system_redis:
   addr: "localhost:6379"  # Redis 服务器地址
+  username: ""            # Redis 用户名（Redis 6.0+ ACL 支持，可选）
   password: ""            # Redis 密码（如果未设置密码则留空）
   db: 0                   # Redis 数据库编号
 

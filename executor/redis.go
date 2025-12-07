@@ -17,8 +17,9 @@ import (
 
 // RedisExecutor Redis 执行器
 type RedisExecutor struct {
-	clients map[string]*redis.Client // 多个 Redis 连接，key 为连接名称
-	mu      sync.RWMutex
+	clients    map[string]*redis.Client // 多个 Redis 连接，key 为连接名称
+	connHashes map[string]string        // 每个连接名对应的配置 hash，用于避免意外重连
+	mu         sync.RWMutex
 }
 
 // Type 返回执行器类型
@@ -29,14 +30,37 @@ func (r *RedisExecutor) Type() string {
 // NewRedisExecutor 创建新的 Redis 执行器
 func NewRedisExecutor() *RedisExecutor {
 	return &RedisExecutor{
-		clients: make(map[string]*redis.Client),
+		clients:    make(map[string]*redis.Client),
+		connHashes: make(map[string]string),
 	}
 }
 
+// calculateConfigHash 计算 Redis 连接配置的 hash 值
+//
+// 使用与 RedisConnectionConfig.ConnCfgHash 相同的算法。
+func (r *RedisExecutor) calculateConfigHash(addr, username, password string, db int) string {
+	cfg := engine.RedisConnectionConfig{
+		Addr:     addr,
+		Username: username,
+		Password: password,
+		DB:       db,
+	}
+	return cfg.ConnCfgHash()
+}
+
 // AddConnection 添加 Redis 连接
-func (r *RedisExecutor) AddConnection(name, addr, password string, db int) error {
+func (r *RedisExecutor) AddConnection(name, addr, username, password string, db int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// 计算配置 hash
+	cfgHash := r.calculateConfigHash(addr, username, password, db)
+
+	// 如果连接已存在且配置相同，不需要重连
+	if oldHash, exists := r.connHashes[name]; exists && oldHash == cfgHash {
+		logger.Debugw("Redis 连接配置未变化，跳过重连", "name", name, "hash", cfgHash)
+		return nil
+	}
 
 	// 如果连接已存在，先关闭旧连接
 	if oldClient, exists := r.clients[name]; exists {
@@ -45,6 +69,7 @@ func (r *RedisExecutor) AddConnection(name, addr, password string, db int) error
 
 	client := redis.NewClient(&redis.Options{
 		Addr:     addr,
+		Username: username, // Redis 6.0+ ACL 支持
 		Password: password,
 		DB:       db,
 	})
@@ -56,7 +81,12 @@ func (r *RedisExecutor) AddConnection(name, addr, password string, db int) error
 	}
 
 	r.clients[name] = client
-	logger.Infow("添加 Redis 连接成功", "name", name, "addr", addr, "db", db)
+	r.connHashes[name] = cfgHash
+	if username != "" {
+		logger.Infow("添加 Redis 连接成功", "name", name, "addr", addr, "username", username, "db", db, "hash", cfgHash)
+	} else {
+		logger.Infow("添加 Redis 连接成功", "name", name, "addr", addr, "db", db, "hash", cfgHash)
+	}
 	return nil
 }
 
@@ -71,12 +101,13 @@ func (r *RedisExecutor) AddConnectionWithClient(name string, client *redis.Clien
 	}
 
 	r.clients[name] = client
+	// 系统连接不存储 hash，因为配置在 config.yaml 中管理
 	logger.Infow("添加 Redis 连接成功（使用已有客户端）", "name", name)
 }
 
 // Init 初始化 Redis 客户端（兼容旧接口，使用默认连接名 "default"）
 func (r *RedisExecutor) Init(addr, password string, db int) error {
-	return r.AddConnection("default", addr, password, db)
+	return r.AddConnection("default", addr, "", password, db)
 }
 
 // getClient 获取 Redis 客户端
@@ -341,6 +372,7 @@ func (r *RedisExecutor) RemoveConnection(name string) error {
 	}
 
 	delete(r.clients, name)
+	delete(r.connHashes, name) // 同时删除对应的 hash
 	logger.Infow("删除 Redis 连接", "name", name)
 	return nil
 }
@@ -391,6 +423,7 @@ func (r *RedisExecutor) UpdateConnections(connections []engine.RedisConnectionCo
 				logger.Warnw("关闭 Redis 连接失败", "name", name, "error", err)
 			}
 			delete(r.clients, name)
+			delete(r.connHashes, name) // 同时删除对应的 hash
 			logger.Infow("删除 Redis 连接", "name", name)
 		}
 	}
@@ -399,6 +432,15 @@ func (r *RedisExecutor) UpdateConnections(connections []engine.RedisConnectionCo
 	for _, conn := range connections {
 		// 跳过系统保留的连接名
 		if conn.Name == "system" || conn.Name == "default" {
+			continue
+		}
+
+		// 计算新配置的 hash
+		newHash := conn.ConnCfgHash()
+
+		// 检查连接是否已存在且配置未变化
+		if oldHash, exists := r.connHashes[conn.Name]; exists && oldHash == newHash {
+			logger.Debugw("Redis 连接配置未变化，跳过重连", "name", conn.Name, "hash", newHash)
 			continue
 		}
 
@@ -412,6 +454,7 @@ func (r *RedisExecutor) UpdateConnections(connections []engine.RedisConnectionCo
 		// 创建新连接
 		client := redis.NewClient(&redis.Options{
 			Addr:     conn.Addr,
+			Username: conn.Username, // Redis 6.0+ ACL 支持
 			Password: conn.Password,
 			DB:       conn.DB,
 		})
@@ -430,7 +473,12 @@ func (r *RedisExecutor) UpdateConnections(connections []engine.RedisConnectionCo
 
 		// 先更新 map 中的连接（原子操作）
 		r.clients[conn.Name] = client
-		logger.Infow("更新 Redis 连接", "name", conn.Name, "addr", conn.Addr, "db", conn.DB)
+		r.connHashes[conn.Name] = newHash // 更新 hash
+		if conn.Username != "" {
+			logger.Infow("更新 Redis 连接", "name", conn.Name, "addr", conn.Addr, "username", conn.Username, "db", conn.DB, "hash", newHash)
+		} else {
+			logger.Infow("更新 Redis 连接", "name", conn.Name, "addr", conn.Addr, "db", conn.DB, "hash", newHash)
+		}
 
 		// 在锁外异步关闭旧连接，给正在执行的命令一些时间完成
 		// 注意：这里不能使用 defer，因为需要在锁外执行
@@ -463,4 +511,5 @@ func (r *RedisExecutor) Close() {
 		}
 	}
 	r.clients = make(map[string]*redis.Client)
+	r.connHashes = make(map[string]string)
 }

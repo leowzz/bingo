@@ -55,9 +55,10 @@ func (m MySQLConfig) ConnCfgHash() string {
 
 // RedisConfig Redis 配置
 type RedisConfig struct {
-	Addr     string `yaml:"addr"`
-	Password string `yaml:"password"`
-	DB       int    `yaml:"db"`
+	Addr     string `yaml:"addr"`     // Redis 服务器地址
+	Username string `yaml:"username"` // Redis 用户名（Redis 6.0+ ACL 支持，可选）
+	Password string `yaml:"password"` // Redis 密码
+	DB       int    `yaml:"db"`       // Redis 数据库编号
 }
 
 // RedisConnection Redis 连接配置（用于规则中的 Redis 动作）

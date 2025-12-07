@@ -119,6 +119,7 @@ func NewApp(cfgPath string) (*App, error) {
 	if cfg.SystemRedis.Addr != "" {
 		systemRedisClient = redis.NewClient(&redis.Options{
 			Addr:     cfg.SystemRedis.Addr,
+			Username: cfg.SystemRedis.Username, // Redis 6.0+ ACL 支持
 			Password: cfg.SystemRedis.Password,
 			DB:       cfg.SystemRedis.DB,
 		})
@@ -151,7 +152,7 @@ func NewApp(cfgPath string) (*App, error) {
 				logger.Warnf("规则 Redis 连接名称 'system' 与系统 Redis 冲突，将跳过")
 				continue
 			}
-			if err := redisExec.AddConnection(conn.Name, conn.Addr, conn.Password, conn.DB); err != nil {
+			if err := redisExec.AddConnection(conn.Name, conn.Addr, conn.Username, conn.Password, conn.DB); err != nil {
 				logger.Warnf("添加 Redis 连接失败 [%s]: %v", conn.Name, err)
 			} else {
 				logger.Infof("Redis 连接已添加: %s", conn.Name)
