@@ -25,6 +25,25 @@
 #   - {{ .NewRow }}: 新行数据（INSERT/UPDATE 时可用）
 #   - {{ .OldRow }}: 旧行数据（UPDATE/DELETE 时可用）
 #   - {{ .FieldName }}: 任意字段名（首字母大写，如 {{ .Email }}, {{ .Status }}）
+#   模板变量可以通过管道符（|）调用内置函数进行转换
+#   可用函数列表：
+#   - toJson: 将值转换为 JSON 字符串
+#     示例: {{ .NewRow | toJson }} 或 {{ .OldRow | toJson }}
+#     用途: 将整个行数据或对象序列化为 JSON 格式
+#   - upper: 将字符串转换为大写
+#     示例: {{ .Status | upper }} 或 {{ .Action | upper }}
+#     用途: 统一格式化为大写，如 "INSERT", "UPDATE" 等
+#   - lower: 将字符串转换为小写
+#     示例: {{ .Action | lower }} 或 {{ .Email | lower }}
+#     用途: 统一格式化为小写，常用于主题名、路由键等
+#   - trim: 去除字符串两端的空白字符（空格、制表符、换行符等）
+#     示例: {{ .Email | trim }} 或 {{ .Name | trim }}
+#     用途: 清理用户输入或数据中的前后空白字符
+#
+#   组合使用示例：
+#     - {{ .Action | lower }}: 将操作类型转为小写（如 "insert", "update"）
+#     - {{ .Email | lower | trim }}: 先将邮箱转小写，再去除空白
+#     - {{ .OldRow | toJson }}: 将旧行数据序列化为 JSON 字符串
 # ============================================================================
 
 # Redis 连接配置（可选）
