@@ -662,6 +662,7 @@ binlog:
 
 - [Redis 连接配置说明](docs/REDIS_CONNECTIONS.md) - 详细的 Redis 连接配置和使用指南
 - [测试文档](docs/TESTING.md) - 单元测试说明和覆盖率报告
+- [Action 扩展支持](docs/ACTION_EXTENSION.md) - 如何扩展自定义动作执行器
 
 ## 📧 联系方式
 

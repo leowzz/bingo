@@ -60,9 +60,10 @@ func NewBatchCollector(duration time.Duration, maxSize int, callback func(key st
 
 // Add 添加项目到批量收集器
 func (b *BatchCollector) Add(key string, item interface{}) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	var shouldFlush bool
+	var itemsToFlush []interface{}
 
+	b.mu.Lock()
 	// 初始化 key 的列表
 	if b.items[key] == nil {
 		b.items[key] = make([]interface{}, 0)
@@ -75,19 +76,34 @@ func (b *BatchCollector) Add(key string, item interface{}) {
 	// 添加项目
 	b.items[key] = append(b.items[key], item)
 
-	// 如果达到最大大小，立即触发
+	// 如果达到最大大小，准备刷新（但不能在这里调用 flush，因为会死锁）
 	if len(b.items[key]) >= b.maxSize {
-		b.flush(key)
+		shouldFlush = true
+		itemsToFlush = make([]interface{}, len(b.items[key]))
+		copy(itemsToFlush, b.items[key])
+		delete(b.items, key)
+	}
+	b.mu.Unlock()
+
+	// 在锁外执行回调
+	if shouldFlush && len(itemsToFlush) > 0 && b.callback != nil {
+		b.callback(key, itemsToFlush)
 	}
 }
 
 // flush 刷新指定 key 的数据
 func (b *BatchCollector) flush(key string) {
+	var items []interface{}
+
 	b.mu.Lock()
-	items := b.items[key]
-	delete(b.items, key)
+	if itemsList, exists := b.items[key]; exists {
+		items = make([]interface{}, len(itemsList))
+		copy(items, itemsList)
+		delete(b.items, key)
+	}
 	b.mu.Unlock()
 
+	// 在锁外执行回调
 	if len(items) > 0 && b.callback != nil {
 		b.callback(key, items)
 	}
@@ -95,14 +111,23 @@ func (b *BatchCollector) flush(key string) {
 
 // FlushAll 刷新所有数据
 func (b *BatchCollector) FlushAll() {
+	allItems := make(map[string][]interface{})
+
 	b.mu.Lock()
-	keys := make([]string, 0, len(b.items))
-	for k := range b.items {
-		keys = append(keys, k)
+	// 复制所有数据
+	for k, items := range b.items {
+		itemsCopy := make([]interface{}, len(items))
+		copy(itemsCopy, items)
+		allItems[k] = itemsCopy
 	}
+	// 清空所有数据
+	b.items = make(map[string][]interface{})
 	b.mu.Unlock()
 
-	for _, key := range keys {
-		b.flush(key)
+	// 在锁外执行所有回调
+	for key, items := range allItems {
+		if len(items) > 0 && b.callback != nil {
+			b.callback(key, items)
+		}
 	}
 }
