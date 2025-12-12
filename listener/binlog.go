@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"bingo/internal/logger"
 	"bingo/utils"
@@ -441,7 +442,26 @@ func rowToMap(columns []schema.TableColumn, row []interface{}) map[string]interf
 	result := make(map[string]interface{})
 	for i, col := range columns {
 		if i < len(row) {
-			result[col.Name] = row[i]
+			val := row[i]
+			// 如果值是 []byte 类型，尝试转换为字符串
+			// 这样可以避免在 JSON 序列化时被自动编码为 base64
+			if b, ok := val.([]byte); ok {
+				// 尝试将 []byte 转换为字符串（假设是 UTF-8 编码的文本）
+				// 如果转换失败或包含非文本字符，仍然使用 []byte（会被编码为 base64）
+				if len(b) > 0 {
+					// 检查是否是有效的 UTF-8 文本
+					if utf8.Valid(b) {
+						result[col.Name] = string(b)
+					} else {
+						// 如果不是有效的 UTF-8，保持 []byte 类型（会被编码为 base64）
+						result[col.Name] = b
+					}
+				} else {
+					result[col.Name] = ""
+				}
+			} else {
+				result[col.Name] = val
+			}
 		}
 	}
 	return result
