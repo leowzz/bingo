@@ -1,6 +1,7 @@
 # Binaries
 bin/
 bingo
+dist/
 *.exe
 *.dll
 *.so

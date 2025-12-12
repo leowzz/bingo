@@ -1,4 +1,4 @@
-.PHONY: help build run test test-verbose test-coverage benchmark benchmark-all benchmark-logger benchmark-comparison clean fmt lint vet install deps tidy run-dev check ci
+.PHONY: help build run test test-verbose test-coverage benchmark benchmark-all benchmark-logger benchmark-comparison clean fmt lint vet install deps tidy run-dev check ci release release-notes
 
 # 变量定义
 BINARY_NAME=bingo
@@ -34,6 +34,8 @@ help:
 	@echo "  make deps           - 下载依赖"
 	@echo "  make tidy           - 整理 go.mod"
 	@echo "  make install        - 安装到 GOPATH/bin"
+	@echo "  make release        - 交叉编译生成各平台二进制文件到 dist 目录"
+	@echo "  make release-notes  - 生成 Release 描述（输出到控制台）"
 
 ## build: 构建二进制文件
 build:
@@ -106,6 +108,7 @@ clean:
 	@echo "清理构建文件..."
 	@rm -f $(BINARY_NAME)
 	@rm -f coverage.out coverage.html
+	@rm -rf dist
 	@go clean -cache
 	@echo "清理完成"
 
@@ -157,3 +160,31 @@ ci: deps tidy fmt vet test-coverage build
 run_py_tool:
 	@echo "运行 py_tool..."
 	cd py_tool && uv run db_tool.py
+
+## release: 交叉编译生成各平台二进制文件
+release:
+	@echo "开始交叉编译各平台二进制文件..."
+	@mkdir -p dist
+	@echo "目标目录: ./dist"
+	@echo ""
+	@echo "编译 Linux amd64..."
+	@GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/$(BINARY_NAME)-linux-amd64 $(MAIN_PACKAGE)
+	@echo "编译 Linux arm64..."
+	@GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/$(BINARY_NAME)-linux-arm64 $(MAIN_PACKAGE)
+	@echo "编译 macOS amd64..."
+	@GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/$(BINARY_NAME)-darwin-amd64 $(MAIN_PACKAGE)
+	@echo "编译 macOS arm64..."
+	@GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/$(BINARY_NAME)-darwin-arm64 $(MAIN_PACKAGE)
+	@echo "编译 Windows amd64..."
+	@GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/$(BINARY_NAME)-windows-amd64.exe $(MAIN_PACKAGE)
+	@echo "编译 Windows arm64..."
+	@GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -o dist/$(BINARY_NAME)-windows-arm64.exe $(MAIN_PACKAGE)
+	@echo ""
+	@echo "交叉编译完成！生成的文件："
+	@ls -lh dist/
+	@echo ""
+	@echo "文件已保存到 ./dist 目录"
+
+## release-notes: 生成 Release 描述
+release-notes:
+	@bash scripts/generate_release.sh
