@@ -319,7 +319,7 @@ func (l *BinlogListener) OnXID(header *replication.EventHeader, nextPos mysql.Po
 		if err := l.posStore.Save(ctx, nextPos); err != nil {
 			logger.Warnw("保存位置到存储失败（事务提交）", "error", err, "file", nextPos.Name, "position", nextPos.Pos)
 		} else {
-			logger.Debugw("已保存 Binlog 位置（事务提交）", "file", nextPos.Name, "position", nextPos.Pos)
+			logger.Infow("已保存 Binlog 位置（事务提交）", "file", nextPos.Name, "position", nextPos.Pos)
 		}
 	}
 	return nil
@@ -345,7 +345,7 @@ func (l *BinlogListener) OnPosSynced(header *replication.EventHeader, pos mysql.
 		if err := l.posStore.Save(ctx, pos); err != nil {
 			logger.Warnw("保存位置到存储失败（强制保存）", "error", err, "file", pos.Name, "position", pos.Pos)
 		} else {
-			logger.Debugw("已保存 Binlog 位置（强制保存）", "file", pos.Name, "position", pos.Pos)
+			logger.Infow("已保存 Binlog 位置（强制保存）", "file", pos.Name, "position", pos.Pos)
 		}
 	}
 	return nil

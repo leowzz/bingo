@@ -22,6 +22,7 @@ import (
 	"bingo/utils"
 
 	"github.com/go-mysql-org/go-mysql/canal"
+	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -36,6 +37,7 @@ type App struct {
 	eventHandler *EventHandler
 	reloader     *config.Reloader
 	redisExec    *executor.RedisExecutor
+	posStore     listener.PositionStore // 位置存储（用于启动时的位置加载）
 }
 
 // NewApp 创建新的应用实例
@@ -220,7 +222,9 @@ func NewApp(cfgPath string) (*App, error) {
 		executor:     exec,
 		listener:     binlogListener,
 		eventHandler: eventHandler,
+		reloader:     nil, // 将在下面初始化
 		redisExec:    redisExec,
+		posStore:     posStore,
 	}
 
 	// 启动事件处理器工作池
@@ -272,12 +276,42 @@ func (a *App) Start() error {
 		os.Exit(0)
 	}()
 
-	// 启动监听
+	// 启动监听 - 实现位置优先级逻辑
+	// 优先级：1. Redis位置 2. 配置文件位置（并保存到Redis） 3. 当前binlog位置
+	if a.config.Binlog.UseRedisStore && a.posStore != nil {
+		// 如果启用了Redis存储，优先从Redis加载位置
+		ctx := context.Background()
+		redisPos, err := a.posStore.Load(ctx)
+		if err != nil {
+			logger.Warnw("从 Redis 加载位置失败，将尝试其他方式", "error", err)
+		} else if redisPos != nil {
+			// Redis中有位置，使用Redis位置
+			logger.Infow("从 Redis 加载 Binlog 位置", "file", redisPos.Name, "position", redisPos.Pos)
+			return a.listener.StartFromPosition(redisPos.Name, redisPos.Pos)
+		}
+		// Redis中没有位置，继续检查配置文件
+	}
+
+	// 检查配置文件中的位置
 	if a.config.Binlog.File != "" {
-		logger.Infof("从 Binlog 位置: %s:%d 开始监听", a.config.Binlog.File, a.config.Binlog.Position)
+		logger.Infof("从配置文件指定的 Binlog 位置: %s:%d 开始监听", a.config.Binlog.File, a.config.Binlog.Position)
+		// 如果启用了Redis存储，将配置文件的位置保存到Redis
+		if a.config.Binlog.UseRedisStore && a.posStore != nil {
+			pos := mysql.Position{
+				Name: a.config.Binlog.File,
+				Pos:  a.config.Binlog.Position,
+			}
+			ctx := context.Background()
+			if err := a.posStore.Save(ctx, pos); err != nil {
+				logger.Warnw("保存配置文件位置到 Redis 失败", "error", err, "file", pos.Name, "position", pos.Pos)
+			} else {
+				logger.Infow("已将配置文件位置保存到 Redis", "file", pos.Name, "position", pos.Pos)
+			}
+		}
 		return a.listener.StartFromPosition(a.config.Binlog.File, a.config.Binlog.Position)
 	}
 
+	// 配置文件也没有位置，从当前binlog位置开始
 	logger.Info("从当前位置开始监听 Binlog 变更...")
 	return a.listener.Start()
 }
