@@ -3,24 +3,22 @@ package utils
 import (
 	"strings"
 	"testing"
-
-	"bingo/listener"
 )
 
 func TestRenderTemplate(t *testing.T) {
 	tests := []struct {
 		name     string
 		tmplStr  string
-		event    *listener.Event
+		data     map[string]interface{}
 		expected string
 		wantErr  bool
 	}{
 		{
 			name:    "简单变量替换",
 			tmplStr: "{{ .Table }}",
-			event: &listener.Event{
-				Table:  "test.users",
-				Action: listener.ActionInsert,
+			data: map[string]interface{}{
+				"Table":  "test.users",
+				"Action": "INSERT",
 			},
 			expected: "test.users",
 			wantErr:  false,
@@ -28,9 +26,9 @@ func TestRenderTemplate(t *testing.T) {
 		{
 			name:    "多个变量",
 			tmplStr: "Table: {{ .Table }}, Action: {{ .Action }}",
-			event: &listener.Event{
-				Table:  "users",
-				Action: listener.ActionUpdate,
+			data: map[string]interface{}{
+				"Table":  "users",
+				"Action": "UPDATE",
 			},
 			expected: "Table: users, Action: UPDATE",
 			wantErr:  false,
@@ -38,10 +36,10 @@ func TestRenderTemplate(t *testing.T) {
 		{
 			name:    "字段访问",
 			tmplStr: "User ID: {{ .Id }}, Email: {{ .Email }}",
-			event: &listener.Event{
-				Table:  "users",
-				Action: listener.ActionInsert,
-				NewRow: map[string]interface{}{
+			data: map[string]interface{}{
+				"Table":  "users",
+				"Action": "INSERT",
+				"NewRow": map[string]interface{}{
 					"id":    123,
 					"email": "test@example.com",
 				},
@@ -52,10 +50,10 @@ func TestRenderTemplate(t *testing.T) {
 		{
 			name:    "toJson 函数",
 			tmplStr: "{{ .NewRow | toJson }}",
-			event: &listener.Event{
-				Table:  "users",
-				Action: listener.ActionInsert,
-				NewRow: map[string]interface{}{
+			data: map[string]interface{}{
+				"Table":  "users",
+				"Action": "INSERT",
+				"NewRow": map[string]interface{}{
 					"id":    123,
 					"name":  "test",
 					"email": "test@example.com",
@@ -67,9 +65,9 @@ func TestRenderTemplate(t *testing.T) {
 		{
 			name:    "空模板",
 			tmplStr: "",
-			event: &listener.Event{
-				Table:  "users",
-				Action: listener.ActionInsert,
+			data: map[string]interface{}{
+				"Table":  "users",
+				"Action": "INSERT",
 			},
 			expected: "",
 			wantErr:  false,
@@ -77,9 +75,9 @@ func TestRenderTemplate(t *testing.T) {
 		{
 			name:    "无效模板语法",
 			tmplStr: "{{ .Invalid }",
-			event: &listener.Event{
-				Table:  "users",
-				Action: listener.ActionInsert,
+			data: map[string]interface{}{
+				"Table":  "users",
+				"Action": "INSERT",
 			},
 			expected: "",
 			wantErr:  true,
@@ -88,7 +86,7 @@ func TestRenderTemplate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := RenderTemplate(tt.tmplStr, tt.event)
+			result, err := RenderTemplate(tt.tmplStr, tt.data)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("RenderTemplate() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -131,21 +129,21 @@ func indexOfSubstring(s, substr string) int {
 }
 
 func TestRenderTemplateWithOldRow(t *testing.T) {
-	event := &listener.Event{
-		Table:  "users",
-		Action: listener.ActionUpdate,
-		OldRow: map[string]interface{}{
+	data := map[string]interface{}{
+		"Table":  "users",
+		"Action": "UPDATE",
+		"OldRow": map[string]interface{}{
 			"id":   123,
 			"name": "old name",
 		},
-		NewRow: map[string]interface{}{
+		"NewRow": map[string]interface{}{
 			"id":   123,
 			"name": "new name",
 		},
 	}
 
 	// NewRow 优先
-	result, err := RenderTemplate("{{ .Name }}", event)
+	result, err := RenderTemplate("{{ .Name }}", data)
 	if err != nil {
 		t.Fatalf("RenderTemplate() error = %v", err)
 	}
@@ -155,10 +153,10 @@ func TestRenderTemplateWithOldRow(t *testing.T) {
 }
 
 func TestRenderTemplateWithFunctions(t *testing.T) {
-	event := &listener.Event{
-		Table:  "users",
-		Action: listener.ActionInsert,
-		NewRow: map[string]interface{}{
+	data := map[string]interface{}{
+		"Table":  "users",
+		"Action": "INSERT",
+		"NewRow": map[string]interface{}{
 			"name": "Test User",
 		},
 	}
@@ -187,7 +185,7 @@ func TestRenderTemplateWithFunctions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := RenderTemplate(tt.tmplStr, event)
+			result, err := RenderTemplate(tt.tmplStr, data)
 			if err != nil {
 				t.Fatalf("RenderTemplate() error = %v", err)
 			}
@@ -200,12 +198,12 @@ func TestRenderTemplateWithFunctions(t *testing.T) {
 
 func TestRenderTemplateWithDeleteAction(t *testing.T) {
 	// 模拟 DELETE 操作：NewRow 为空，OldRow 有数据
-	event := &listener.Event{
-		Table:  "test.users_001",
-		Action: listener.ActionDelete,
-		Schema: "test",
-		NewRow: map[string]interface{}{}, // DELETE 操作时 NewRow 为空
-		OldRow: map[string]interface{}{
+	data := map[string]interface{}{
+		"Table":  "test.users_001",
+		"Action": "DELETE",
+		"Schema": "test",
+		"NewRow": map[string]interface{}{}, // DELETE 操作时 NewRow 为空
+		"OldRow": map[string]interface{}{
 			"id":       6,
 			"email":    "user6@example.com",
 			"username": "user6",
@@ -248,7 +246,7 @@ func TestRenderTemplateWithDeleteAction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := RenderTemplate(tt.tmplStr, event)
+			result, err := RenderTemplate(tt.tmplStr, data)
 			if err != nil {
 				t.Fatalf("RenderTemplate() error = %v", err)
 			}

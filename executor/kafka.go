@@ -89,7 +89,7 @@ func (k *KafkaExecutor) Execute(ctx context.Context, action engine.Action, event
 	}
 
 	// 渲染 topic（支持模板变量）
-	topic, err := utils.RenderTemplate(action.Topic, event)
+	topic, err := utils.RenderTemplate(action.Topic, event.ToMap())
 	if err != nil {
 		return fmt.Errorf("渲染 topic 模板失败: %w", err)
 	}
@@ -97,7 +97,7 @@ func (k *KafkaExecutor) Execute(ctx context.Context, action engine.Action, event
 	// 渲染 key（可选）
 	var key []byte
 	if action.Key != "" {
-		keyStr, err := utils.RenderTemplate(action.Key, event)
+		keyStr, err := utils.RenderTemplate(action.Key, event.ToMap())
 		if err != nil {
 			return fmt.Errorf("渲染 key 模板失败: %w", err)
 		}
@@ -107,14 +107,14 @@ func (k *KafkaExecutor) Execute(ctx context.Context, action engine.Action, event
 	// 渲染 value
 	var value []byte
 	if action.Value != "" {
-		valueStr, err := utils.RenderTemplate(action.Value, event)
+		valueStr, err := utils.RenderTemplate(action.Value, event.ToMap())
 		if err != nil {
 			return fmt.Errorf("渲染 value 模板失败: %w", err)
 		}
 		value = []byte(valueStr)
 	} else {
 		// 如果没有指定 value，使用默认的 JSON 格式
-		valueStr, err := utils.RenderTemplate("{{ .NewRow | toJson }}", event)
+		valueStr, err := utils.RenderTemplate("{{ .NewRow | toJson }}", event.ToMap())
 		if err != nil {
 			return fmt.Errorf("渲染默认 value 模板失败: %w", err)
 		}

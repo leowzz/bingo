@@ -92,14 +92,14 @@ func (r *RabbitMQExecutor) Execute(ctx context.Context, action engine.Action, ev
 	// 渲染消息内容
 	var messageBody []byte
 	if action.RabbitMQMessage != "" {
-		messageStr, err := utils.RenderTemplate(action.RabbitMQMessage, event)
+		messageStr, err := utils.RenderTemplate(action.RabbitMQMessage, event.ToMap())
 		if err != nil {
 			return fmt.Errorf("渲染消息模板失败: %w", err)
 		}
 		messageBody = []byte(messageStr)
 	} else {
 		// 如果没有指定消息，使用默认的 JSON 格式
-		messageStr, err := utils.RenderTemplate("{{ .NewRow | toJson }}", event)
+		messageStr, err := utils.RenderTemplate("{{ .NewRow | toJson }}", event.ToMap())
 		if err != nil {
 			return fmt.Errorf("渲染默认消息模板失败: %w", err)
 		}
@@ -109,7 +109,7 @@ func (r *RabbitMQExecutor) Execute(ctx context.Context, action engine.Action, ev
 	// 如果指定了队列，直接发送到队列
 	if action.RabbitMQQueue != "" {
 		// 渲染队列名称（支持模板变量）
-		queueName, err := utils.RenderTemplate(action.RabbitMQQueue, event)
+		queueName, err := utils.RenderTemplate(action.RabbitMQQueue, event.ToMap())
 		if err != nil {
 			return fmt.Errorf("渲染队列名称模板失败: %w", err)
 		}
@@ -167,14 +167,14 @@ func (r *RabbitMQExecutor) Execute(ctx context.Context, action engine.Action, ev
 	}
 
 	// 渲染交换机和路由键（支持模板变量）
-	exchange, err := utils.RenderTemplate(action.RabbitMQExchange, event)
+	exchange, err := utils.RenderTemplate(action.RabbitMQExchange, event.ToMap())
 	if err != nil {
 		return fmt.Errorf("渲染交换机名称模板失败: %w", err)
 	}
 
 	routingKey := ""
 	if action.RabbitMQRoutingKey != "" {
-		routingKey, err = utils.RenderTemplate(action.RabbitMQRoutingKey, event)
+		routingKey, err = utils.RenderTemplate(action.RabbitMQRoutingKey, event.ToMap())
 		if err != nil {
 			return fmt.Errorf("渲染路由键模板失败: %w", err)
 		}
@@ -245,4 +245,3 @@ func CloseRabbitMQConnections() {
 		delete(rabbitmqConnections, url)
 	}
 }
-

@@ -206,7 +206,7 @@ func (r *RedisExecutor) executeDel(ctx context.Context, client *redis.Client, ac
 		// 批量删除
 		keys := make([]string, 0, len(action.Keys))
 		for _, keyTemplate := range action.Keys {
-			key, err := utils.RenderTemplate(keyTemplate, event)
+			key, err := utils.RenderTemplate(keyTemplate, event.ToMap())
 			if err != nil {
 				return fmt.Errorf("渲染 key 模板失败 (批量): %w", err)
 			}
@@ -225,7 +225,7 @@ func (r *RedisExecutor) executeDel(ctx context.Context, client *redis.Client, ac
 		return fmt.Errorf("DEL 命令需要指定 key 或 keys")
 	}
 
-	key, err := utils.RenderTemplate(action.Key, event)
+	key, err := utils.RenderTemplate(action.Key, event.ToMap())
 	if err != nil {
 		return fmt.Errorf("渲染 key 模板失败: %w", err)
 	}
@@ -244,12 +244,12 @@ func (r *RedisExecutor) executeSet(ctx context.Context, client *redis.Client, ac
 		return fmt.Errorf("SET 命令需要指定 key")
 	}
 
-	key, err := utils.RenderTemplate(action.Key, event)
+	key, err := utils.RenderTemplate(action.Key, event.ToMap())
 	if err != nil {
 		return fmt.Errorf("渲染 key 模板失败: %w", err)
 	}
 
-	value, err := utils.RenderTemplate(action.Value, event)
+	value, err := utils.RenderTemplate(action.Value, event.ToMap())
 	if err != nil {
 		return fmt.Errorf("渲染 value 模板失败: %w", err)
 	}
@@ -285,7 +285,7 @@ func (r *RedisExecutor) executeExpire(ctx context.Context, client *redis.Client,
 		return fmt.Errorf("EXPIRE 命令需要指定 key")
 	}
 
-	key, err := utils.RenderTemplate(action.Key, event)
+	key, err := utils.RenderTemplate(action.Key, event.ToMap())
 	if err != nil {
 		return fmt.Errorf("渲染 key 模板失败: %w", err)
 	}
@@ -316,7 +316,7 @@ func (r *RedisExecutor) executeIncrDecr(ctx context.Context, client *redis.Clien
 		return fmt.Errorf("INCR/DECR 命令需要指定 key")
 	}
 
-	key, err := utils.RenderTemplate(action.Key, event)
+	key, err := utils.RenderTemplate(action.Key, event.ToMap())
 	if err != nil {
 		return fmt.Errorf("渲染 key 模板失败: %w", err)
 	}

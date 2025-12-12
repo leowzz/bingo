@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"bingo/internal/logger"
+	"bingo/utils"
 
 	"github.com/go-mysql-org/go-mysql/canal"
 	"github.com/go-mysql-org/go-mysql/mysql"
@@ -34,12 +35,13 @@ type BinlogListener struct {
 	canal             *canal.Canal
 	handler           EventHandler
 	filterTables      map[string]bool
-	posStore          PositionStore  // 位置存储
-	lastPos           mysql.Position // 最后处理的位置
-	lastPosMutex      sync.RWMutex   // 保护 lastPos 的互斥锁
-	saveInterval      time.Duration  // 位置保存间隔
-	saveOnTransaction bool           // 是否在事务提交时保存位置
-	stopPeriodicSave  chan struct{}  // 停止定期保存的信号
+	posStore          PositionStore    // 位置存储
+	lastPos           mysql.Position   // 最后处理的位置
+	lastPosMutex      sync.RWMutex     // 保护 lastPos 的互斥锁
+	saveInterval      time.Duration    // 位置保存间隔
+	saveOnTransaction bool             // 是否在事务提交时保存位置
+	stopPeriodicSave  chan struct{}    // 停止定期保存的信号
+	posSaveDebouncer  *utils.Debouncer // 位置保存防抖器
 }
 
 // New 创建新的 Binlog 监听器
@@ -65,6 +67,12 @@ func New(cfg Config) (*BinlogListener, error) {
 		saveOnTransaction = true
 	}
 
+	// 计算防抖时间：使用 saveInterval 的一半，但最小为 1 秒
+	debounceDuration := saveInterval / 2
+	if debounceDuration < 1*time.Second {
+		debounceDuration = 1 * time.Second
+	}
+
 	listener := &BinlogListener{
 		canal:             c,
 		handler:           cfg.Handler,
@@ -73,6 +81,11 @@ func New(cfg Config) (*BinlogListener, error) {
 		saveInterval:      saveInterval,
 		saveOnTransaction: saveOnTransaction,
 		stopPeriodicSave:  make(chan struct{}),
+	}
+
+	// 如果配置了位置存储，初始化防抖器
+	if cfg.PosStore != nil {
+		listener.posSaveDebouncer = utils.NewDebouncer(debounceDuration)
 	}
 
 	// 注册事件处理器
@@ -152,7 +165,14 @@ func (l *BinlogListener) Close() {
 		close(l.stopPeriodicSave)
 	}
 
-	// 关闭前保存最后的位置
+	// 立即执行防抖器中待执行的位置保存操作
+	if l.posSaveDebouncer != nil {
+		l.posSaveDebouncer.Flush("position")
+		// 等待一小段时间，确保异步操作完成（防抖器回调中的 goroutine）
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// 关闭前保存最后的位置（同步保存，确保数据不丢失）
 	if l.posStore != nil {
 		l.lastPosMutex.RLock()
 		pos := l.lastPos
@@ -313,14 +333,27 @@ func (l *BinlogListener) OnXID(header *replication.EventHeader, nextPos mysql.Po
 	l.lastPos = nextPos
 	l.lastPosMutex.Unlock()
 
-	// 如果启用了事务提交时保存，在事务提交时保存位置（这是最可靠的保存时机）
-	if l.posStore != nil && l.saveOnTransaction {
-		ctx := context.Background()
-		if err := l.posStore.Save(ctx, nextPos); err != nil {
-			logger.Warnw("保存位置到存储失败（事务提交）", "error", err, "file", nextPos.Name, "position", nextPos.Pos)
-		} else {
-			logger.Infow("已保存 Binlog 位置（事务提交）", "file", nextPos.Name, "position", nextPos.Pos)
-		}
+	// 如果启用了事务提交时保存，使用防抖器异步保存位置
+	if l.posStore != nil && l.saveOnTransaction && l.posSaveDebouncer != nil {
+		l.posSaveDebouncer.Debounce("position", func() {
+			// 读取最新的位置
+			l.lastPosMutex.RLock()
+			pos := l.lastPos
+			l.lastPosMutex.RUnlock()
+
+			// 异步保存位置
+			if pos.Name != "" {
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					defer cancel()
+					if err := l.posStore.Save(ctx, pos); err != nil {
+						logger.Warnw("异步保存位置失败（事务提交）", "error", err, "file", pos.Name, "position", pos.Pos)
+					} else {
+						logger.Debugw("异步保存 Binlog 位置（事务提交）", "file", pos.Name, "position", pos.Pos)
+					}
+				}()
+			}
+		})
 	}
 	return nil
 }
@@ -338,15 +371,28 @@ func (l *BinlogListener) OnPosSynced(header *replication.EventHeader, pos mysql.
 	l.lastPos = pos
 	l.lastPosMutex.Unlock()
 
-	// 如果 force 为 true，立即保存位置
+	// 如果 force 为 true，使用防抖器异步保存位置
 	// 否则位置会在事务提交时（OnXID）保存
-	if l.posStore != nil && force {
-		ctx := context.Background()
-		if err := l.posStore.Save(ctx, pos); err != nil {
-			logger.Warnw("保存位置到存储失败（强制保存）", "error", err, "file", pos.Name, "position", pos.Pos)
-		} else {
-			logger.Infow("已保存 Binlog 位置（强制保存）", "file", pos.Name, "position", pos.Pos)
-		}
+	if l.posStore != nil && force && l.posSaveDebouncer != nil {
+		l.posSaveDebouncer.Debounce("position", func() {
+			// 读取最新的位置
+			l.lastPosMutex.RLock()
+			currentPos := l.lastPos
+			l.lastPosMutex.RUnlock()
+
+			// 异步保存位置
+			if currentPos.Name != "" {
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					defer cancel()
+					if err := l.posStore.Save(ctx, currentPos); err != nil {
+						logger.Warnw("异步保存位置失败（强制保存）", "error", err, "file", currentPos.Name, "position", currentPos.Pos)
+					} else {
+						logger.Debugw("异步保存 Binlog 位置（强制保存）", "file", currentPos.Name, "position", currentPos.Pos)
+					}
+				}()
+			}
+		})
 	}
 	return nil
 }

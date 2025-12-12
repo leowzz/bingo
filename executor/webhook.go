@@ -41,7 +41,7 @@ func (w *WebhookExecutor) Execute(ctx context.Context, action engine.Action, eve
 	}
 
 	// 渲染 URL
-	urlStr, err := utils.RenderTemplate(action.URL, event)
+	urlStr, err := utils.RenderTemplate(action.URL, event.ToMap())
 	if err != nil {
 		return fmt.Errorf("渲染 URL 模板失败: %w", err)
 	}
@@ -59,7 +59,7 @@ func (w *WebhookExecutor) Execute(ctx context.Context, action engine.Action, eve
 	var body io.Reader
 	var bodyStr string
 	if action.Body != "" {
-		bodyStr, err = utils.RenderTemplate(action.Body, event)
+		bodyStr, err = utils.RenderTemplate(action.Body, event.ToMap())
 		if err != nil {
 			return fmt.Errorf("渲染 Body 模板失败: %w", err)
 		}
@@ -81,7 +81,7 @@ func (w *WebhookExecutor) Execute(ctx context.Context, action engine.Action, eve
 	// 设置请求头
 	if action.Headers != nil {
 		for k, v := range action.Headers {
-			headerValue, err := utils.RenderTemplate(v, event)
+			headerValue, err := utils.RenderTemplate(v, event.ToMap())
 			if err != nil {
 				return fmt.Errorf("渲染 Header 模板失败: %w, header: %s", err, k)
 			}

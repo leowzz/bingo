@@ -6,12 +6,18 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
-
-	"bingo/listener"
 )
 
 // RenderTemplate 渲染模板字符串
-func RenderTemplate(tmplStr string, event *listener.Event) (string, error) {
+// data 应该是一个 map[string]interface{}，包含以下字段：
+//   - Table: 表名（格式: database.table）
+//   - Action: 操作类型（字符串）
+//   - Timestamp: 时间戳
+//   - OldRow: 更新前的数据（map[string]interface{}）
+//   - NewRow: 更新后的数据（map[string]interface{}）
+//   - Schema: 数据库名
+//   - TableName: 表名（不含数据库）
+func RenderTemplate(tmplStr string, data map[string]interface{}) (string, error) {
 	if tmplStr == "" {
 		return "", nil
 	}
@@ -41,28 +47,31 @@ func RenderTemplate(tmplStr string, event *listener.Event) (string, error) {
 		return "", fmt.Errorf("解析模板失败: %w", err)
 	}
 
-	// 准备模板数据
-	data := event.ToMap()
+	// 复制数据，避免修改原始 map
+	dataCopy := make(map[string]interface{})
+	for k, v := range data {
+		dataCopy[k] = v
+	}
 
 	// 添加字段访问的快捷方式（支持 .ID, .Email 等）
 	// 从 NewRow 或 OldRow 中提取字段
-	if event.NewRow != nil {
-		for k, v := range event.NewRow {
-			addFieldVariants(data, k, v)
+	if newRow, ok := dataCopy["NewRow"].(map[string]interface{}); ok && newRow != nil {
+		for k, v := range newRow {
+			addFieldVariants(dataCopy, k, v)
 		}
 	}
-	if event.OldRow != nil {
-		for k, v := range event.OldRow {
+	if oldRow, ok := dataCopy["OldRow"].(map[string]interface{}); ok && oldRow != nil {
+		for k, v := range oldRow {
 			// 如果 NewRow 中没有，才使用 OldRow 的值
-			if !hasFieldVariants(data, k) {
-				addFieldVariants(data, k, v)
+			if !hasFieldVariants(dataCopy, k) {
+				addFieldVariants(dataCopy, k, v)
 			}
 		}
 	}
 
 	// 执行模板
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := tmpl.Execute(&buf, dataCopy); err != nil {
 		return "", fmt.Errorf("执行模板失败: %w", err)
 	}
 

@@ -27,7 +27,7 @@ func (l *LogExecutor) Execute(ctx context.Context, action engine.Action, event *
 		message = fmt.Sprintf("Event: %s on table %s", event.Action, event.Table)
 	}
 
-	renderedMsg, err := utils.RenderTemplate(message, event)
+	renderedMsg, err := utils.RenderTemplate(message, event.ToMap())
 	if err != nil {
 		return fmt.Errorf("渲染日志消息失败: %w", err)
 	}

@@ -7,16 +7,18 @@ import (
 
 // Debouncer 防抖器
 type Debouncer struct {
-	mu       sync.Mutex
-	timers   map[string]*time.Timer
-	duration time.Duration
+	mu        sync.Mutex
+	timers    map[string]*time.Timer
+	callbacks map[string]func() // 保存回调函数，用于 Flush
+	duration  time.Duration
 }
 
 // NewDebouncer 创建新的防抖器
 func NewDebouncer(duration time.Duration) *Debouncer {
 	return &Debouncer{
-		timers:   make(map[string]*time.Timer),
-		duration: duration,
+		timers:    make(map[string]*time.Timer),
+		callbacks: make(map[string]func()),
+		duration:  duration,
 	}
 }
 
@@ -30,13 +32,59 @@ func (d *Debouncer) Debounce(key string, fn func()) {
 		timer.Stop()
 	}
 
+	// 保存回调函数
+	d.callbacks[key] = fn
+
 	// 创建新的定时器
 	d.timers[key] = time.AfterFunc(d.duration, func() {
 		d.mu.Lock()
+		callback := d.callbacks[key]
 		delete(d.timers, key)
+		delete(d.callbacks, key)
 		d.mu.Unlock()
-		fn()
+
+		// 执行回调
+		if callback != nil {
+			callback()
+		}
 	})
+}
+
+// Flush 立即执行指定 key 的待执行回调并等待完成
+// 如果 key 为空字符串，则执行所有待执行的回调
+func (d *Debouncer) Flush(key string) {
+	d.mu.Lock()
+	var callbacks []func()
+
+	if key == "" {
+		// 执行所有待执行的回调
+		for k, timer := range d.timers {
+			timer.Stop()
+			if callback, exists := d.callbacks[k]; exists {
+				callbacks = append(callbacks, callback)
+			}
+			delete(d.timers, k)
+			delete(d.callbacks, k)
+		}
+	} else {
+		// 执行指定 key 的回调
+		if timer, exists := d.timers[key]; exists {
+			timer.Stop()
+			if callback, exists := d.callbacks[key]; exists {
+				callbacks = append(callbacks, callback)
+			}
+			delete(d.timers, key)
+			delete(d.callbacks, key)
+		}
+	}
+	d.mu.Unlock()
+
+	// 在锁外执行回调（避免死锁）
+	for _, callback := range callbacks {
+		if callback != nil {
+			callback()
+		}
+	}
 }
 
 // BatchCollector 批量收集器
