@@ -55,6 +55,9 @@ type Action struct {
 	Brokers            []string          `yaml:"brokers,omitempty"`              // Kafka brokers
 	Topic              string            `yaml:"topic,omitempty"`                // Kafka topic
 	Partition          int32             `yaml:"partition,omitempty"`            // Kafka partition
+	KafkaSASLMechanism string            `yaml:"kafka_sasl_mechanism,omitempty"` // Kafka SASL 机制 (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)
+	KafkaUsername      string            `yaml:"kafka_username,omitempty"`       // Kafka 用户名
+	KafkaPassword      string            `yaml:"kafka_password,omitempty"`       // Kafka 密码
 	RabbitMQUrl        string            `yaml:"rabbitmq_url,omitempty"`         // RabbitMQ 连接URL
 	RabbitMQExchange   string            `yaml:"rabbitmq_exchange,omitempty"`    // RabbitMQ 交换机名称
 	RabbitMQRoutingKey string            `yaml:"rabbitmq_routing_key,omitempty"` // RabbitMQ 路由键（支持模板）

@@ -16,6 +16,7 @@ require (
 require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/rabbitmq/amqp091-go v1.10.0
+	github.com/xdg-go/scram v1.2.0
 )
 
 require (
@@ -52,6 +53,8 @@ require (
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
 	github.com/shopspring/decimal v1.2.0 // indirect
 	github.com/stoewer/go-strcase v1.2.0 // indirect
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect

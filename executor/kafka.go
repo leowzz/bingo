@@ -11,6 +11,7 @@ import (
 	"bingo/utils"
 
 	"github.com/IBM/sarama"
+	"github.com/xdg-go/scram"
 )
 
 var (
@@ -32,13 +33,13 @@ func (k *KafkaExecutor) Type() string {
 }
 
 // getProducer 获取或创建 Kafka 生产者
-func (k *KafkaExecutor) getProducer(brokers []string) (sarama.SyncProducer, error) {
+func (k *KafkaExecutor) getProducer(brokers []string, action engine.Action) (sarama.SyncProducer, error) {
 	if len(brokers) == 0 {
 		return nil, fmt.Errorf("Kafka brokers 不能为空")
 	}
 
-	// 使用 brokers 列表作为 key
-	key := fmt.Sprintf("%v", brokers)
+	// 使用 brokers 和认证信息作为 key（不同认证信息使用不同的 producer）
+	key := fmt.Sprintf("%v|%s|%s|%s", brokers, action.KafkaSASLMechanism, action.KafkaUsername, action.KafkaPassword)
 
 	kafkaMutex.RLock()
 	if producer, exists := kafkaProducers[key]; exists {
@@ -61,13 +62,47 @@ func (k *KafkaExecutor) getProducer(brokers []string) (sarama.SyncProducer, erro
 	config.Producer.RequiredAcks = sarama.WaitForAll
 	config.Producer.Retry.Max = 3
 
+	// 配置 SASL 认证（如果提供了认证信息）
+	if action.KafkaSASLMechanism != "" && action.KafkaUsername != "" && action.KafkaPassword != "" {
+		config.Net.SASL.Enable = true
+		config.Net.SASL.Mechanism = sarama.SASLMechanism(action.KafkaSASLMechanism)
+		config.Net.SASL.User = action.KafkaUsername
+		config.Net.SASL.Password = action.KafkaPassword
+		config.Net.SASL.Handshake = true
+
+		// 根据机制类型设置 SCRAM 客户端生成器
+		switch action.KafkaSASLMechanism {
+		case "SCRAM-SHA-256":
+			config.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+				return &XDGSCRAMClient{HashGeneratorFcn: scram.SHA256}
+			}
+		case "SCRAM-SHA-512":
+			config.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+				return &XDGSCRAMClient{HashGeneratorFcn: scram.SHA512}
+			}
+		case "PLAIN":
+			// PLAIN 机制不需要特殊配置
+		default:
+			return nil, fmt.Errorf("不支持的 SASL 机制: %s，支持: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512", action.KafkaSASLMechanism)
+		}
+
+		logger.Debugw("配置 Kafka SASL 认证",
+			"mechanism", action.KafkaSASLMechanism,
+			"username", action.KafkaUsername,
+		)
+	}
+
 	producer, err := sarama.NewSyncProducer(brokers, config)
 	if err != nil {
 		return nil, fmt.Errorf("创建 Kafka 生产者失败: %w", err)
 	}
 
 	kafkaProducers[key] = producer
-	logger.Infow("创建 Kafka 生产者成功", "brokers", brokers)
+	logger.Infow("创建 Kafka 生产者成功",
+		"brokers", brokers,
+		"sasl_enabled", action.KafkaSASLMechanism != "",
+		"mechanism", action.KafkaSASLMechanism,
+	)
 
 	return producer, nil
 }
@@ -83,7 +118,7 @@ func (k *KafkaExecutor) Execute(ctx context.Context, action engine.Action, event
 	}
 
 	// 获取生产者
-	producer, err := k.getProducer(action.Brokers)
+	producer, err := k.getProducer(action.Brokers, action)
 	if err != nil {
 		return err
 	}
@@ -163,6 +198,35 @@ func (k *KafkaExecutor) Execute(ctx context.Context, action engine.Action, event
 
 	return nil
 }
+
+// XDGSCRAMClient 实现 SCRAM 客户端
+type XDGSCRAMClient struct {
+	*scram.Client
+	*scram.ClientConversation
+	scram.HashGeneratorFcn
+}
+
+// Begin 开始 SCRAM 认证
+func (x *XDGSCRAMClient) Begin(userName, password, authzID string) (err error) {
+	x.Client, err = x.HashGeneratorFcn.NewClient(userName, password, authzID)
+	if err != nil {
+		return err
+	}
+	x.ClientConversation = x.Client.NewConversation()
+	return nil
+}
+
+// Step 执行 SCRAM 步骤
+func (x *XDGSCRAMClient) Step(challenge string) (response string, err error) {
+	response, err = x.ClientConversation.Step(challenge)
+	return
+}
+
+// Done 完成 SCRAM 认证
+func (x *XDGSCRAMClient) Done() bool {
+	return x.ClientConversation.Done()
+}
+
 
 // Close 关闭所有 Kafka 生产者（用于优雅关闭）
 func CloseKafkaProducers() {

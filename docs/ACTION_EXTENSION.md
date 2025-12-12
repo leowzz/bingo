@@ -658,6 +658,163 @@ func TestCustomExecutor_Execute(t *testing.T) {
 2. 检查参数名称是否正确（注意 YAML 字段名）
 3. 为可选参数提供默认值
 
+## 内置执行器
+
+BinGo 内置了以下执行器，可以直接在规则文件中使用：
+
+### Kafka 执行器
+
+将数据库变更事件发送到 Kafka 主题。
+
+**配置字段**：
+- `brokers`：Kafka broker 地址列表（必需）
+- `topic`：主题名称（必需，支持模板变量）
+- `key`：消息 Key（可选，支持模板变量）
+- `value`：消息 Value（可选，支持模板变量，如果不指定则默认使用 NewRow 的 JSON）
+- `partition`：分区（可选，0 表示自动选择）
+- `kafka_sasl_mechanism`：SASL 认证机制（可选，支持：PLAIN、SCRAM-SHA-256、SCRAM-SHA-512）
+- `kafka_username`：Kafka 用户名（可选，使用 SASL 认证时必需）
+- `kafka_password`：Kafka 密码（可选，使用 SASL 认证时必需）
+
+**示例（无鉴权）**：
+```yaml
+actions:
+  - type: "kafka"
+    brokers:
+      - "localhost:9092"
+    topic: "events.{{ .Table }}"
+    key: "{{ .ID }}"
+    value: "{{ .NewRow | toJson }}"
+    partition: 0
+```
+
+**示例（使用 SASL PLAIN 鉴权）**：
+```yaml
+actions:
+  - type: "kafka"
+    brokers:
+      - "localhost:9092"
+    topic: "events.{{ .Table }}"
+    key: "{{ .ID }}"
+    value: "{{ .NewRow | toJson }}"
+    kafka_sasl_mechanism: "PLAIN"
+    kafka_username: "your_username"
+    kafka_password: "your_password"
+```
+
+**示例（使用 SASL SCRAM-SHA-256 鉴权）**：
+```yaml
+actions:
+  - type: "kafka"
+    brokers:
+      - "localhost:9092"
+    topic: "events.{{ .Table }}"
+    key: "{{ .ID }}"
+    value: "{{ .NewRow | toJson }}"
+    kafka_sasl_mechanism: "SCRAM-SHA-256"
+    kafka_username: "your_username"
+    kafka_password: "your_password"
+```
+
+### RabbitMQ 执行器
+
+将数据库变更事件发送到 RabbitMQ 队列或交换机。
+
+**配置字段**：
+- `rabbitmq_url`：RabbitMQ 连接 URL（必需，格式：`amqp://user:pass@host:port/vhost`）
+- `rabbitmq_queue`：队列名称（可选，如果指定则直接发送到队列，支持模板变量）
+- `rabbitmq_exchange`：交换机名称（可选，如果指定则发送到交换机，支持模板变量）
+- `rabbitmq_routing_key`：路由键（可选，用于交换机路由，支持模板变量）
+- `rabbitmq_message`：消息内容（可选，支持模板变量，如果不指定则默认使用 NewRow 的 JSON）
+
+**使用队列的示例**：
+```yaml
+actions:
+  - type: "rabbitmq"
+    rabbitmq_url: "amqp://guest:guest@localhost:5672/"
+    rabbitmq_queue: "events.{{ .Table }}"
+    rabbitmq_message: "{{ .NewRow | toJson }}"
+```
+
+**使用交换机的示例**：
+```yaml
+actions:
+  - type: "rabbitmq"
+    rabbitmq_url: "amqp://guest:guest@localhost:5672/"
+    rabbitmq_exchange: "events"
+    rabbitmq_routing_key: "{{ .Table }}.{{ .Action }}"
+    rabbitmq_message: "{{ .NewRow | toJson }}"
+```
+
+**注意**：必须指定 `rabbitmq_queue` 或 `rabbitmq_exchange` 其中之一。
+
+### Webhook 执行器
+
+发送 HTTP 请求到指定的 URL。
+
+**配置字段**：
+- `url`：请求 URL（必需，支持模板变量）
+- `method`：HTTP 方法（可选，默认为 POST）
+- `headers`：请求头（可选，支持模板变量）
+- `body`：请求体（可选，支持模板变量）
+- `timeout`：超时时间（秒，可选，默认 5 秒）
+- `retry`：重试次数（可选，默认 1 次）
+
+**示例**：
+```yaml
+actions:
+  - type: "webhook"
+    url: "http://api.example.com/events"
+    method: "POST"
+    headers:
+      Content-Type: "application/json"
+      X-Event-Type: "{{ .Action }}"
+    body: "{{ .NewRow | toJson }}"
+    timeout: 10
+    retry: 3
+```
+
+### Redis 执行器
+
+执行 Redis 命令。
+
+**配置字段**：
+- `cmd`：Redis 命令（必需）
+- `key`：Redis key（必需，支持模板变量）
+- `keys`：Redis keys 列表（批量操作时使用，支持模板变量）
+- `value`：Redis value（可选，支持模板变量）
+- `ttl`：过期时间（秒，可选）
+- `redis_conn`：Redis 连接名称（可选，从规则配置的 `redis_connections` 中选择）
+
+**示例**：
+```yaml
+actions:
+  - type: "redis"
+    cmd: "SET"
+    key: "cache:user:{{ .ID }}"
+    value: "{{ .NewRow | toJson }}"
+    ttl: 3600
+    redis_conn: "cache"
+```
+
+### Log 执行器
+
+记录日志。
+
+**配置字段**：
+- `level`：日志级别（可选，默认为 info，可选值：debug、info、warn、error）
+- `message`：日志消息（必需，支持模板变量）
+- `format`：日志格式（可选，默认为 text，可选值：text、json）
+
+**示例**：
+```yaml
+actions:
+  - type: "log"
+    level: "info"
+    message: "事件发生: {{ .Table }}/{{ .Action }}, ID={{ .ID }}"
+    format: "json"
+```
+
 ## 相关文档
 
 - [规则配置说明](../rules.yaml.template) - 了解如何在规则文件中配置动作
