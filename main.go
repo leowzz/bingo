@@ -69,10 +69,7 @@ func NewApp(cfgPath string) (*App, error) {
 	// 与系统实际 CPU 核心数取最小值，避免配置错误导致设置过高
 	actualCPU := runtime.NumCPU()
 	desiredProcs := cfg.Performance.WorkerPoolSize + 4
-	maxProcs := desiredProcs
-	if maxProcs > actualCPU {
-		maxProcs = actualCPU
-	}
+	maxProcs := min(actualCPU, desiredProcs)
 	runtime.GOMAXPROCS(maxProcs)
 
 	// 初始化日志
@@ -91,11 +88,7 @@ func NewApp(cfgPath string) (*App, error) {
 	defer logger.Sync()
 
 	// 记录 GOMAXPROCS 设置信息
-	if maxProcs < desiredProcs {
-		logger.Infof("GOMAXPROCS 已设置为 %d（期望值: %d，系统 CPU 核心数: %d，已限制以避免超出系统能力）", maxProcs, desiredProcs, actualCPU)
-	} else {
-		logger.Infof("GOMAXPROCS 已设置为 %d（系统 CPU 核心数: %d，工作池大小: %d）", maxProcs, actualCPU, cfg.Performance.WorkerPoolSize)
-	}
+	logger.Infof("GOMAXPROCS 已设置为 %d（系统 CPU 核心数: %d，工作池大小: %d）", maxProcs, actualCPU, cfg.Performance.WorkerPoolSize)
 
 	// 加载规则和 Redis 连接配置
 	rulesConfig, err := engine.LoadRulesWithRedisConnections(cfg.RulesFile)
@@ -143,7 +136,7 @@ func NewApp(cfgPath string) (*App, error) {
 	if cfg.SystemRedis.Addr != "" && systemRedisClient != nil {
 		// 直接使用已创建的客户端，避免重复创建
 		redisExec.AddConnectionWithClient("system", systemRedisClient)
-		logger.Info("系统 Redis 连接已添加到执行器（规则可通过 'system' 名称使用）")
+		logger.Debug("系统 Redis 连接已添加到执行器（规则可通过 'system' 名称使用）")
 	}
 
 	// 添加规则中配置的 Redis 连接
@@ -157,7 +150,7 @@ func NewApp(cfgPath string) (*App, error) {
 			if err := redisExec.AddConnection(conn.Name, conn.Addr, conn.Username, conn.Password, conn.DB); err != nil {
 				logger.Warnf("添加 Redis 连接失败 [%s]: %v", conn.Name, err)
 			} else {
-				logger.Infof("Redis 连接已添加: %s", conn.Name)
+				logger.Debug("Redis 连接已添加: %s", conn.Name)
 			}
 		}
 	}
@@ -171,7 +164,7 @@ func NewApp(cfgPath string) (*App, error) {
 	// 注册 Redis 执行器
 	if redisExec.HasConnections() {
 		exec.Register(redisExec)
-		logger.Info("Redis 执行器已注册")
+		logger.Debug("Redis 执行器已注册")
 	}
 
 	// 创建 Binlog 监听器配置
@@ -252,8 +245,8 @@ func NewApp(cfgPath string) (*App, error) {
 func (a *App) Start() error {
 	logger.Info("正在启动 BinGo 服务...")
 	logger.Infof("MySQL: %s", a.config.MySQL.Addr())
-	logger.Infof("规则文件: %s", a.config.RulesFile)
-	logger.Infof("已加载 %d 条规则", len(a.matcher.GetRules()))
+	logger.Debug("规则文件: %s", a.config.RulesFile)
+	logger.Debug("已加载 %d 条规则", len(a.matcher.GetRules()))
 
 	// 启动 Prometheus metrics 端点
 	go func() {
@@ -276,8 +269,13 @@ func (a *App) Start() error {
 		os.Exit(0)
 	}()
 
-	// 启动监听 - 实现位置优先级逻辑
-	// 优先级：1. Redis位置 2. 配置文件位置（并保存到Redis） 3. 当前binlog位置
+	// 启动监听
+	return a.startBinlogListener()
+}
+
+// startBinlogListener 启动 Binlog 监听，实现位置优先级逻辑
+// 优先级：1. Redis位置 2. 配置文件位置（并保存到Redis） 3. 当前binlog位置
+func (a *App) startBinlogListener() error {
 	if a.config.Binlog.UseRedisStore && a.posStore != nil {
 		// 如果启用了Redis存储，优先从Redis加载位置
 		ctx := context.Background()
@@ -286,7 +284,8 @@ func (a *App) Start() error {
 			logger.Warnw("从 Redis 加载位置失败，将尝试其他方式", "error", err)
 		} else if redisPos != nil {
 			// Redis中有位置，使用Redis位置
-			logger.Infow("从 Redis 加载 Binlog 位置", "file", redisPos.Name, "position", redisPos.Pos)
+			key := a.config.Binlog.RedisStoreKey
+			logger.Infow("从 Redis 加载 Binlog 位置", "file", redisPos.Name, "position", redisPos.Pos, "key", key)
 			return a.listener.StartFromPosition(redisPos.Name, redisPos.Pos)
 		}
 		// Redis中没有位置，继续检查配置文件
@@ -302,10 +301,11 @@ func (a *App) Start() error {
 				Pos:  a.config.Binlog.Position,
 			}
 			ctx := context.Background()
+			key := a.config.Binlog.RedisStoreKey
 			if err := a.posStore.Save(ctx, pos); err != nil {
-				logger.Warnw("保存配置文件位置到 Redis 失败", "error", err, "file", pos.Name, "position", pos.Pos)
+				logger.Warnw("保存配置文件位置到 Redis 失败", "error", err, "file", pos.Name, "position", pos.Pos, "key", key)
 			} else {
-				logger.Infow("已将配置文件位置保存到 Redis", "file", pos.Name, "position", pos.Pos)
+				logger.Infow("已将配置文件位置保存到 Redis", "file", pos.Name, "position", pos.Pos, "key", key)
 			}
 		}
 		return a.listener.StartFromPosition(a.config.Binlog.File, a.config.Binlog.Position)

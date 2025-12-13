@@ -102,7 +102,7 @@ func (r *RedisExecutor) AddConnectionWithClient(name string, client *redis.Clien
 
 	r.clients[name] = client
 	// 系统连接不存储 hash，因为配置在 config.yaml 中管理
-	logger.Infow("添加 Redis 连接成功（使用已有客户端）", "name", name)
+	logger.Debugw("添加 Redis 连接成功（使用已有客户端）", "name", name)
 }
 
 // Init 初始化 Redis 客户端（兼容旧接口，使用默认连接名 "default"）
