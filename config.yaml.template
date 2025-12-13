@@ -61,3 +61,8 @@ logging:
   enable_goroutine_id: true  # 是否在日志中打印 goroutine ID（会影响性能，默认 true）
                              # 设置为 false 可以提升性能，但会失去 goroutine 追踪信息
 
+# Prometheus metrics 配置
+# 用于暴露 Prometheus 指标采集端点
+metrics:
+  port: 9090              # Prometheus metrics 服务端口，默认 9090
+

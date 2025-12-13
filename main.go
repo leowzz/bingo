@@ -258,7 +258,7 @@ func (a *App) Start() error {
 	// 启动 Prometheus metrics 端点
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		metricsAddr := ":9090"
+		metricsAddr := fmt.Sprintf(":%d", a.config.Metrics.Port)
 		logger.Infof("Prometheus metrics 端点启动在 %s/metrics", metricsAddr)
 		if err := http.ListenAndServe(metricsAddr, nil); err != nil {
 			logger.Warnf("启动 metrics 端点失败: %v", err)

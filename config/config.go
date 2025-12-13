@@ -20,6 +20,7 @@ type Config struct {
 	RulesFile   string            `yaml:"rules_file"`
 	Performance PerformanceConfig `yaml:"performance"`
 	Logging     LoggingConfig     `yaml:"logging"`
+	Metrics     MetricsConfig     `yaml:"metrics"`
 }
 
 // MySQLConfig MySQL 连接配置
@@ -100,6 +101,11 @@ type LoggingConfig struct {
 	EnableGoroutineID bool   `yaml:"enable_goroutine_id"` // 是否在日志中打印 goroutine ID（会影响性能），默认 true
 }
 
+// MetricsConfig Prometheus metrics 配置
+type MetricsConfig struct {
+	Port int `yaml:"port"` // Prometheus metrics 服务端口，默认 9090
+}
+
 // LoadConfig 从文件加载配置
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -173,6 +179,9 @@ func (c *Config) setDefaults() {
 	} else {
 		// 如果未设置，默认为 true
 		c.Binlog.SaveOnTransaction = true
+	}
+	if c.Metrics.Port == 0 {
+		c.Metrics.Port = 9090
 	}
 }
 
