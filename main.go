@@ -16,6 +16,7 @@ import (
 	"bingo/config"
 	"bingo/engine"
 	"bingo/executor"
+	"bingo/internal/ha"
 	"bingo/internal/logger"
 	"bingo/internal/metrics"
 	"bingo/listener"
@@ -38,6 +39,7 @@ type App struct {
 	reloader     *config.Reloader
 	redisExec    *executor.RedisExecutor
 	posStore     listener.PositionStore // 位置存储（用于启动时的位置加载）
+	lockManager  *ha.LockManager        // 分布式锁管理器（用于高可用）
 }
 
 // NewApp 创建新的应用实例
@@ -216,6 +218,21 @@ func NewApp(cfgPath string) (*App, error) {
 		return nil, err
 	}
 
+	// 初始化分布式锁管理器（如果启用高可用）
+	var lockManager *ha.LockManager
+	if cfg.HA.Enabled && systemRedisClient != nil {
+		lockTTL := time.Duration(cfg.HA.LockTTL) * time.Second
+		lm, err := ha.NewLockManager(systemRedisClient, cfg.HA.LockKey, lockTTL)
+		if err != nil {
+			logger.Warnf("初始化分布式锁管理器失败: %v，将禁用高可用", err)
+		} else {
+			lockManager = lm
+			logger.Infof("已初始化分布式锁管理器，锁键: %s, TTL: %d秒", cfg.HA.LockKey, cfg.HA.LockTTL)
+		}
+	} else if cfg.HA.Enabled && systemRedisClient == nil {
+		logger.Warnf("高可用已启用，但系统 Redis 未配置或连接失败，将禁用高可用")
+	}
+
 	app := &App{
 		config:       cfg,
 		matcher:      matcher,
@@ -225,6 +242,7 @@ func NewApp(cfgPath string) (*App, error) {
 		reloader:     nil, // 将在下面初始化
 		redisExec:    redisExec,
 		posStore:     posStore,
+		lockManager:  lockManager,
 	}
 
 	// 启动事件处理器工作池
@@ -276,6 +294,170 @@ func (a *App) Start() error {
 		os.Exit(0)
 	}()
 
+	// 如果启用高可用，先尝试获取锁
+	if a.lockManager != nil {
+		ctx := context.Background()
+		acquired, err := a.lockManager.Acquire(ctx)
+		if err != nil {
+			logger.Errorw("获取分布式锁失败", "error", err)
+			return fmt.Errorf("获取分布式锁失败: %w", err)
+		}
+
+		if !acquired {
+			// 未获取到锁，进入 standby 模式
+			logger.Infow("未获取到分布式锁，进入 Standby 模式，将定期重试",
+				"instance_id", a.lockManager.GetInstanceID(),
+			)
+			return a.startStandbyMode()
+		}
+
+		// 成功获取锁，启动锁续期和校验机制
+		refreshInterval := time.Duration(a.config.HA.RefreshInterval) * time.Second
+		validateInterval := refreshInterval / 2 // 校验间隔为续期间隔的一半
+		if validateInterval < 2*time.Second {
+			validateInterval = 2 * time.Second // 最小 2 秒
+		}
+
+		ctx = context.Background()
+		a.lockManager.StartRefresh(ctx, refreshInterval)
+		a.lockManager.StartValidate(ctx, validateInterval)
+
+		logger.Infow("已启动锁续期和校验机制",
+			"refresh_interval", refreshInterval,
+			"validate_interval", validateInterval,
+			"instance_id", a.lockManager.GetInstanceID(),
+		)
+
+		// 启动监控 goroutine，检查锁状态
+		go a.monitorLockStatus()
+
+		// 启动 binlog 监听
+		return a.startBinlogListener()
+	}
+
+	// 未启用高可用，直接启动 binlog 监听
+	return a.startBinlogListener()
+}
+
+// reloadRules 重载规则的回调函数
+func (a *App) reloadRules(rulesConfig *engine.RulesConfig) error {
+	logger.Info("开始重载规则...")
+
+	// 更新匹配器的规则
+	a.matcher.UpdateRules(rulesConfig.Rules)
+	logger.Infof("已更新 %d 条规则", len(rulesConfig.Rules))
+
+	// 更新事件处理器的规则相关资源（batch collectors 和 ordering shards）
+	if a.eventHandler != nil {
+		a.eventHandler.UpdateRules(rulesConfig.Rules)
+	}
+
+	// 更新 Redis 连接配置
+	if a.redisExec != nil {
+		if err := a.redisExec.UpdateConnections(rulesConfig.RedisConnections); err != nil {
+			logger.Warnw("更新 Redis 连接配置失败", "error", err)
+			// 不返回错误，因为规则已经更新成功
+		}
+	}
+
+	logger.Info("规则重载完成")
+	return nil
+}
+
+// startStandbyMode 启动 Standby 模式，定期重试获取锁
+func (a *App) startStandbyMode() error {
+	logger.Info("进入 Standby 模式，等待获取分布式锁...")
+
+	// 定期重试获取锁
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	ctx := context.Background()
+	for {
+		select {
+		case <-ticker.C:
+			acquired, err := a.lockManager.Acquire(ctx)
+			if err != nil {
+				logger.Warnw("尝试获取分布式锁失败", "error", err)
+				continue
+			}
+
+			if acquired {
+				// 成功获取锁，启动服务
+				logger.Infow("成功获取分布式锁，开始启动服务",
+					"instance_id", a.lockManager.GetInstanceID(),
+				)
+
+				// 如果 listener 已被关闭，需要重新创建
+				if a.listener == nil {
+					if err := a.recreateListener(); err != nil {
+						logger.Errorw("重新创建 Binlog 监听器失败", "error", err)
+						// 释放锁，等待下次重试
+						_ = a.lockManager.Release(ctx)
+						continue
+					}
+				}
+
+				// 启动锁续期和校验机制
+				refreshInterval := time.Duration(a.config.HA.RefreshInterval) * time.Second
+				validateInterval := refreshInterval / 2
+				if validateInterval < 2*time.Second {
+					validateInterval = 2 * time.Second
+				}
+
+				a.lockManager.StartRefresh(ctx, refreshInterval)
+				a.lockManager.StartValidate(ctx, validateInterval)
+
+				// 启动监控 goroutine
+				go a.monitorLockStatus()
+
+				// 启动 binlog 监听
+				return a.startBinlogListener()
+			}
+		}
+	}
+}
+
+// recreateListener 重新创建 Binlog 监听器
+func (a *App) recreateListener() error {
+	// 从规则中提取需要监控的表列表
+	monitoredTables := engine.ExtractMonitoredTables(a.matcher.GetRules())
+
+	// 创建 Binlog 监听器配置
+	canalCfg := canal.NewDefaultConfig()
+	canalCfg.Addr = a.config.MySQL.Addr()
+	canalCfg.User = a.config.MySQL.User
+	canalCfg.Password = a.config.MySQL.Password
+	canalCfg.Dump.TableDB = ""
+	canalCfg.Dump.Tables = nil
+	canalCfg.Dump.ExecutionPath = ""
+
+	// 配置位置保存间隔
+	saveInterval := time.Duration(a.config.Binlog.SaveInterval) * time.Second
+	if saveInterval == 0 {
+		saveInterval = 5 * time.Second
+	}
+
+	// 重新创建监听器
+	binlogListener, err := listener.New(listener.Config{
+		CanalCfg:          canalCfg,
+		Handler:           a.eventHandler,
+		Tables:            monitoredTables,
+		PosStore:          a.posStore,
+		SaveInterval:      saveInterval,
+		SaveOnTransaction: a.config.Binlog.SaveOnTransaction,
+	})
+	if err != nil {
+		return fmt.Errorf("重新创建 Binlog 监听器失败: %w", err)
+	}
+
+	a.listener = binlogListener
+	logger.Info("已重新创建 Binlog 监听器")
+	return nil
+}
+
+// startBinlogListener 启动 Binlog 监听（从位置存储或配置中加载位置）
+func (a *App) startBinlogListener() error {
 	// 启动监听 - 实现位置优先级逻辑
 	// 优先级：1. Redis位置 2. 配置文件位置（并保存到Redis） 3. 当前binlog位置
 	if a.config.Binlog.UseRedisStore && a.posStore != nil {
@@ -316,29 +498,41 @@ func (a *App) Start() error {
 	return a.listener.Start()
 }
 
-// reloadRules 重载规则的回调函数
-func (a *App) reloadRules(rulesConfig *engine.RulesConfig) error {
-	logger.Info("开始重载规则...")
+// monitorLockStatus 监控锁状态，如果失去锁则停止 binlog 监听
+func (a *App) monitorLockStatus() {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
 
-	// 更新匹配器的规则
-	a.matcher.UpdateRules(rulesConfig.Rules)
-	logger.Infof("已更新 %d 条规则", len(rulesConfig.Rules))
+	for {
+		select {
+		case <-ticker.C:
+			if a.lockManager == nil {
+				return
+			}
 
-	// 更新事件处理器的规则相关资源（batch collectors 和 ordering shards）
-	if a.eventHandler != nil {
-		a.eventHandler.UpdateRules(rulesConfig.Rules)
-	}
+			// 检查是否是 Leader
+			if !a.lockManager.IsLeader() {
+				logger.Warnw("当前实例不再是 Leader，停止 Binlog 监听",
+					"instance_id", a.lockManager.GetInstanceID(),
+				)
 
-	// 更新 Redis 连接配置
-	if a.redisExec != nil {
-		if err := a.redisExec.UpdateConnections(rulesConfig.RedisConnections); err != nil {
-			logger.Warnw("更新 Redis 连接配置失败", "error", err)
-			// 不返回错误，因为规则已经更新成功
+				// 停止 binlog 监听（关闭后无法重启，需要在重新获取锁后重新创建）
+				if a.listener != nil {
+					a.listener.Close()
+					a.listener = nil
+				}
+
+				// 进入 Standby 模式（在后台运行，不会阻塞）
+				go func() {
+					if err := a.startStandbyMode(); err != nil {
+						logger.Errorw("Standby 模式启动失败", "error", err)
+					}
+				}()
+
+				return
+			}
 		}
 	}
-
-	logger.Info("规则重载完成")
-	return nil
 }
 
 // Stop 停止应用
@@ -357,6 +551,17 @@ func (a *App) Stop() {
 	if a.listener != nil {
 		a.listener.Close()
 	}
+
+	// 停止锁续期和校验，并释放锁
+	if a.lockManager != nil {
+		a.lockManager.StopRefresh()
+		a.lockManager.StopValidate()
+		ctx := context.Background()
+		if err := a.lockManager.Release(ctx); err != nil {
+			logger.Warnw("释放分布式锁失败", "error", err)
+		}
+	}
+
 	logger.Info("服务已停止")
 	logger.Sync()
 }

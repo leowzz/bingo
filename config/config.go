@@ -17,6 +17,7 @@ type Config struct {
 	MySQL       MySQLConfig       `yaml:"mysql"`
 	SystemRedis RedisConfig       `yaml:"system_redis"` // 系统使用的 Redis（用于位置存储等）
 	Binlog      BinlogConfig      `yaml:"binlog"`
+	HA          HAConfig          `yaml:"ha"` // 高可用配置
 	RulesFile   string            `yaml:"rules_file"`
 	Performance PerformanceConfig `yaml:"performance"`
 	Logging     LoggingConfig     `yaml:"logging"`
@@ -100,6 +101,14 @@ type LoggingConfig struct {
 	EnableGoroutineID bool   `yaml:"enable_goroutine_id"` // 是否在日志中打印 goroutine ID（会影响性能），默认 true
 }
 
+// HAConfig 高可用配置
+type HAConfig struct {
+	Enabled         bool   `yaml:"enabled"`          // 是否启用高可用
+	LockKey         string `yaml:"lock_key"`         // 锁的 Redis key（支持模板语法 {{ .ConnCfgHash }}）
+	LockTTL         int    `yaml:"lock_ttl"`         // 锁过期时间（秒），默认 15
+	RefreshInterval int    `yaml:"refresh_interval"` // 锁续期间隔（秒），默认 5
+}
+
 // LoadConfig 从文件加载配置
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -118,6 +127,11 @@ func LoadConfig(path string) (*Config, error) {
 	// 解析 redis_store_key 中的模板
 	if err := cfg.resolveRedisStoreKeyTemplate(); err != nil {
 		return nil, fmt.Errorf("解析 redis_store_key 模板失败: %w", err)
+	}
+
+	// 解析 ha.lock_key 中的模板
+	if err := cfg.resolveHALockKeyTemplate(); err != nil {
+		return nil, fmt.Errorf("解析 ha.lock_key 模板失败: %w", err)
 	}
 
 	return &cfg, nil
@@ -174,6 +188,16 @@ func (c *Config) setDefaults() {
 		// 如果未设置，默认为 true
 		c.Binlog.SaveOnTransaction = true
 	}
+	// HA 配置默认值
+	if c.HA.LockKey == "" {
+		c.HA.LockKey = "bingo:ha:lock:{{ .ConnCfgHash }}"
+	}
+	if c.HA.LockTTL == 0 {
+		c.HA.LockTTL = 15 // 默认 15 秒
+	}
+	if c.HA.RefreshInterval == 0 {
+		c.HA.RefreshInterval = 5 // 默认 5 秒
+	}
 }
 
 // resolveRedisStoreKeyTemplate 解析 redis_store_key 中的模板
@@ -208,6 +232,41 @@ func (c *Config) resolveRedisStoreKeyTemplate() error {
 	}
 
 	c.Binlog.RedisStoreKey = buf.String()
+	return nil
+}
+
+// resolveHALockKeyTemplate 解析 ha.lock_key 中的模板
+//
+// 支持 {{ .ConnCfgHash }} 模板变量，会自动替换为 MySQL 连接配置的 hash 值。
+func (c *Config) resolveHALockKeyTemplate() error {
+	if c.HA.LockKey == "" {
+		return nil
+	}
+
+	// 检查是否包含模板语法
+	if !containsTemplate(c.HA.LockKey) {
+		return nil
+	}
+
+	// 准备模板数据
+	tmplData := struct {
+		ConnCfgHash string
+	}{
+		ConnCfgHash: c.MySQL.ConnCfgHash(),
+	}
+
+	// 解析并执行模板
+	tmpl, err := template.New("ha_lock_key").Parse(c.HA.LockKey)
+	if err != nil {
+		return fmt.Errorf("解析模板失败: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, tmplData); err != nil {
+		return fmt.Errorf("执行模板失败: %w", err)
+	}
+
+	c.HA.LockKey = buf.String()
 	return nil
 }
 

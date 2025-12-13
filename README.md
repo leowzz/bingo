@@ -145,6 +145,7 @@ server-id=1
 3. **详细配置说明**：
    - 配置文件字段说明请查看 `config.yaml.template` 中的注释
    - 规则配置说明请查看 `rules.yaml.template` 中的注释
+   - 高可用配置说明请查看 [HA 配置说明](docs/HA.md)
 
 4. **规则文件热重载**：
    - 修改 `rules.yaml` 后保存，系统会自动检测并重载规则
@@ -622,6 +623,7 @@ binlog:
 ### 3. 可靠性保障
 
 - 启用断点续传，避免数据丢失
+- 启用高可用（HA）功能，实现主从自动切换（详见 [HA 配置说明](docs/HA.md)）
 - 配置动作重试机制
 - 监控关键指标，及时告警
 - 使用规则文件热重载，无需重启即可更新规则
@@ -660,6 +662,7 @@ binlog:
 
 ## 📚 更多文档
 
+- [高可用（HA）配置说明](docs/HA.md) - 高可用功能配置和使用指南
 - [Redis 连接配置说明](docs/REDIS_CONNECTIONS.md) - 详细的 Redis 连接配置和使用指南
 - [测试文档](docs/TESTING.md) - 单元测试说明和覆盖率报告
 - [Action 扩展支持](docs/ACTION_EXTENSION.md) - 如何扩展自定义动作执行器

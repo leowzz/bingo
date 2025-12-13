@@ -35,6 +35,14 @@ binlog:
   save_interval: 5         # 位置保存间隔（秒），定期保存到 Redis，默认 5 秒
   save_on_transaction: true # 是否在事务提交时立即保存位置，默认 true（推荐）
 
+# 高可用配置（可选）
+# 使用 Redis 分布式锁实现主从切换，确保同一时间只有一个实例在处理 binlog
+ha:
+  enabled: false           # 是否启用高可用，默认 false（单实例模式）
+  lock_key: "bingo:ha:lock:{{ .ConnCfgHash }}"  # 锁的 Redis key，支持模板语法 {{ .ConnCfgHash }}，会自动替换为 MySQL 连接配置的 hash 值
+  lock_ttl: 15             # 锁过期时间（秒），默认 15 秒
+  refresh_interval: 5      # 锁续期间隔（秒），默认 5 秒（建议设置为 lock_ttl 的 1/3）
+
 # 规则文件路径
 # 指定规则配置文件的路径，支持相对路径和绝对路径
 rules_file: "rules.yaml"
