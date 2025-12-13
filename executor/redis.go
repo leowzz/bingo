@@ -64,7 +64,10 @@ func (r *RedisExecutor) AddConnection(name, addr, username, password string, db 
 
 	// 如果连接已存在，先关闭旧连接
 	if oldClient, exists := r.clients[name]; exists {
-		oldClient.Close()
+		err := oldClient.Close()
+		if err != nil {
+			logger.Errorf("关闭 Redis 链接失败 [%s]: %w", name, err)
+		}
 	}
 
 	client := redis.NewClient(&redis.Options{
@@ -97,7 +100,10 @@ func (r *RedisExecutor) AddConnectionWithClient(name string, client *redis.Clien
 
 	// 如果连接已存在，先关闭旧连接（但不关闭传入的客户端）
 	if oldClient, exists := r.clients[name]; exists && oldClient != client {
-		oldClient.Close()
+		err := oldClient.Close()
+		if err != nil {
+			logger.Errorf("关闭 Redis 链接失败 [%s]: %w", name, err)
+		}
 	}
 
 	r.clients[name] = client
